@@ -52,19 +52,17 @@ class Stats:
 # ---------- core ----------
 class TaiXiuAI:
     """
-    - ~50 thuật toán label “classic” (Dirichlet/Momentum/Markov/EWMA/Streak/Parity/md5/noise)
-    - ~15 thuật toán combo (center / band / edges / md5 / random)
-    - Luôn ensemble bằng 'algo_mix' + 'combo_mix' (đã khóa)
-    - Lưu 'pending' ở B1 → B2 chấm đúng theo guess đã lưu
+    - ~50 thuật toán label “classic”
+    - ~15 thuật toán combo (center/band/edges/md5/random)
+    - Ensemble: 'algo_mix' + 'combo_mix' (khóa)
+    - Pending ở B1 → B2 chấm theo guess đã lưu
     """
 
     def __init__(self):
         self.records: List[Record] = []
         self.per_algo: Dict[str, Stats] = {}
         self.combo_stats: Dict[str, Stats] = {}
-
-        # pending: md5 -> {guess, probs, combo, ts, algo}
-        self.pending: Dict[str, Dict] = {}
+        self.pending: Dict[str, Dict] = {}  # md5 -> {"guess","probs","combo","ts","algo"}
 
         self.window_default = 20
         self._sum_cache: Dict[int, float] = {}
@@ -72,7 +70,7 @@ class TaiXiuAI:
         self.algorithms: List[Tuple[str, Callable]] = []
         self.combo_strategies: List[Tuple[str, Callable]] = []
 
-        # ===== register LABEL (≈51 cái) =====
+        # ===== register LABEL (≈52 gồm mix) =====
         self._register_dirichlet_classic()  # 7
         self._register_momentum_classic()   # 11
         self._register_markov1_classic()    # 5
@@ -81,14 +79,13 @@ class TaiXiuAI:
         self._register_parity_classic()     # 3
         self._register_md5_bias_classic()   # 7
         self._register_noise_classic()      # 9
-        self.algorithms.append(("algo_mix", self._algo_mix))  # 1 mix
-        # Tổng xấp xỉ: 51+1 = 52 (đủ > 50)
+        self.algorithms.append(("algo_mix", self._algo_mix))
 
-        # ===== register COMBO (≈15 cái) =====
+        # ===== register COMBO (≈15 gồm mix) =====
         self._register_combo_classic()
         self.combo_strategies.append(("combo_mix", self._combo_mix))
 
-        # Khóa luôn về MIX
+        # Khóa về MIX
         self.fixed_algo_name = "algo_mix"
         self.fixed_combo_name = "combo_mix"
         self.current_algo_index = self._index_of(self.algorithms, self.fixed_algo_name)
@@ -230,7 +227,6 @@ class TaiXiuAI:
 
     # ===== register LABEL (classic ~50) =====
     def _register_dirichlet_classic(self):
-        # 7 thuật toán
         setups = [
             (12, 1), (12, 2), (12, 3),
             (20, 1), (20, 2), (20, 3),
@@ -248,7 +244,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_momentum_classic(self):
-        # 11 thuật toán
         setups = [
             (8, 1.0), (8, 1.2), (8, 1.5),
             (12, 1.0), (12, 1.2), (12, 1.5),
@@ -268,7 +263,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_markov1_classic(self):
-        # 5 thuật toán
         setups = [(20, 1.0), (20, 2.0), (40, 1.0), (40, 2.0), (80, 1.0)]
         for w, s in setups:
             name = f"algo_markov1_w{w}_s{int(s*10)}"
@@ -290,7 +284,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_ewma_classic(self):
-        # 4 thuật toán
         for d in (0.92, 0.94, 0.96, 0.98):
             name = f"algo_ewma_d{int(d*100)}"
             def make(decay=d):
@@ -306,7 +299,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_streak_classic(self):
-        # 5 thuật toán
         setups = [(3, 0.6), (3, 0.8), (4, 0.6), (4, 0.8), (5, 0.6)]
         for t, b in setups:
             name = f"algo_streak_t{t}_b{int(b*10)}"
@@ -336,7 +328,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_parity_classic(self):
-        # 3 thuật toán
         for w in (12, 16, 20):
             name = f"algo_parity_w{w}"
             def make(w=w):
@@ -351,7 +342,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_md5_bias_classic(self):
-        # 7 thuật toán
         setups = [
             (0, 0.15, 0.0), (0, 0.20, 0.0),
             (3, 0.15, 0.0), (3, 0.20, 0.0),
@@ -372,7 +362,6 @@ class TaiXiuAI:
             self.algorithms.append((name, make()))
 
     def _register_noise_classic(self):
-        # 9 thuật toán
         for s in range(9):
             name = f"algo_noise_s{s}"
             rnd = random.Random(s)
