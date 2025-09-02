@@ -10,19 +10,19 @@ from pydantic import BaseModel, Field
 
 from predictor import TaiXiuAI
 
-# ========== cấu hình ==========
-ADMIN_API_KEY = "01279992564Aa!"
-PER_IP_LIMIT = (40, 60)   # 40 req / 60s / IP
-GLOBAL_LIMIT = (600, 60)
-SESSION_IDLE_TTL = 60 * 60 * 12
-SESSION_MAX = 800
+# ================== CẤU HÌNH ==================
+ADMIN_API_KEY = "01279992564Aa!"       # đổi nếu muốn
+PER_IP_LIMIT  = (40, 60)                # 40 req / 60s / IP
+GLOBAL_LIMIT  = (600, 60)               # toàn server
+SESSION_IDLE_TTL = 60*60*12
+SESSION_MAX   = 800
 
 app = FastAPI(title="TaiXiu AI", docs_url=None, redoc_url=None, openapi_url=None)
 
 _ip_hits: Dict[str, Deque[float]] = defaultdict(deque)
 _global_hits: Deque[float] = deque()
 
-
+# ================== RATE LIMIT + SECURITY HEADERS ==================
 def rate_limiter(ip: str):
     now = time.time()
     per, win = PER_IP_LIMIT
@@ -40,7 +40,6 @@ def rate_limiter(ip: str):
         return JSONResponse({"detail": "Server Busy"}, status_code=429)
     _global_hits.append(now)
 
-
 @app.middleware("http")
 async def sec_limit(request: Request, call_next):
     headers = {
@@ -53,86 +52,72 @@ async def sec_limit(request: Request, call_next):
     if request.url.path not in ("/ui", "/health"):
         rl = rate_limiter(ip)
         if rl:
-            for k, v in headers.items():
-                rl.headers[k] = v
+            for k, v in headers.items(): rl.headers[k] = v
             return rl
     resp = await call_next(request)
-    for k, v in headers.items():
-        resp.headers[k] = v
+    for k, v in headers.items(): resp.headers[k] = v
     return resp
-
 
 def verify_admin(x_api_key: str = Header(None)):
     if x_api_key != ADMIN_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-
-# ========== session ==========
+# ================== SESSION ==================
 class SessionItem:
     def __init__(self):
         self.ai = TaiXiuAI()
         self.last = time.time()
-
-        # Bankroll + fibonacci đơn giản (tuỳ chọn)
+        # bankroll + fibonacci
         self.bank_vnd: int = 0
         self.fib_base: int = 0
         self.fib_max: int = 12
         self.fib_idx: int = 0
-        self.fib_seq: List[int] = [1, 1]
+        self.fib_seq: List[int] = [1,1]
         self.last_bet_vnd: int = 0
 
     def ensure_seq(self):
-        self.fib_seq = [1, 1]
+        self.fib_seq = [1,1]
         while len(self.fib_seq) < max(2, self.fib_max):
             self.fib_seq.append(self.fib_seq[-1] + self.fib_seq[-2])
 
     def next_fib_bet(self) -> int:
-        if self.fib_base <= 0 or self.bank_vnd <= 0:
-            return 0
+        if self.fib_base <= 0 or self.bank_vnd <= 0: return 0
         self.ensure_seq()
-        idx = max(0, min(self.fib_idx, len(self.fib_seq) - 1))
+        idx = max(0, min(self.fib_idx, len(self.fib_seq)-1))
         raw = self.fib_seq[idx] * self.fib_base
-        cap = int(max(0, self.bank_vnd) * 0.2)
-        bet = min(raw, cap if cap > 0 else raw)
+        cap = int(max(0, self.bank_vnd) * 0.2)  # không quá 20% vốn
+        bet = min(raw, cap if cap>0 else raw)
         return (bet // 1000) * 1000
 
     def apply_round_result(self, win: bool):
         bet = self.last_bet_vnd
-        if bet > 0:
+        if bet>0:
             if win:
                 self.bank_vnd += bet
-                self.fib_idx = max(0, self.fib_idx - 2)
+                self.fib_idx = max(0, self.fib_idx-2)
             else:
                 self.bank_vnd -= bet
-                self.fib_idx = min(self.fib_idx + 1, self.fib_max - 1)
+                self.fib_idx = min(self.fib_idx+1, self.fib_max-1)
         if self.bank_vnd <= 0:
             self.bank_vnd = 0
             self.fib_idx = 0
 
-
 SESSIONS: Dict[str, SessionItem] = {}
-
 
 def _gc_sessions():
     now = time.time()
     for sid in list(SESSIONS.keys()):
         if now - SESSIONS[sid].last > SESSION_IDLE_TTL:
-            try:
-                SESSIONS[sid].ai.cleanup()
-            except Exception:
-                ...
+            try: SESSIONS[sid].ai.cleanup()
+            except Exception: ...
             SESSIONS.pop(sid, None)
     if len(SESSIONS) > SESSION_MAX:
-        by = sorted(SESSIONS.items(), key=lambda kv: kv[1].last)
-        for sid, _ in by[: len(SESSIONS) - SESSION_MAX]:
-            try:
-                SESSIONS[sid].ai.cleanup()
-            except Exception:
-                ...
+        for sid,_ in sorted(SESSIONS.items(), key=lambda kv: kv[1].last)[:len(SESSIONS)-SESSION_MAX]:
+            try: SESSIONS[sid].ai.cleanup()
+            except Exception: ...
             SESSIONS.pop(sid, None)
 
-
-def get_ai(request: Request, response: Optional[HTMLResponse] = None) -> TaiXiuAI:
+def get_ai(request: Request, response: Optional[HTMLResponse]=None) -> TaiXiuAI:
     _gc_sessions()
     sid = request.cookies.get("txsid")
     if not sid or sid not in SESSIONS:
@@ -143,13 +128,10 @@ def get_ai(request: Request, response: Optional[HTMLResponse] = None) -> TaiXiuA
     SESSIONS[sid].last = time.time()
     return SESSIONS[sid].ai
 
-
 def get_sess(request: Request) -> SessionItem:
-    sid = request.cookies.get("txsid")
-    return SESSIONS[sid]
+    return SESSIONS[request.cookies.get("txsid")]
 
-
-# ========== Schemas ==========
+# ================== SCHEMAS ==================
 class Step1Body(BaseModel):
     prev_dice: Optional[List[int]] = None
     prev_md5: Optional[str] = None
@@ -157,115 +139,89 @@ class Step1Body(BaseModel):
     alpha: int = Field(default=1, ge=1)
     window_n: Optional[int] = None
     temperature: Optional[float] = Field(default=0.85, ge=0.1, le=3.0)
-
     bankroll_vnd: Optional[int] = None
     fib_base_vnd: Optional[int] = None
     fib_max_step: Optional[int] = Field(default=12, ge=2, le=30)
-
 
 class Step2Body(BaseModel):
     md5: Optional[str] = None
     real: Optional[str] = None
     dice: Optional[List[int]] = None
 
-
 class AlgoSelectBody(BaseModel):
     name: str
-
 
 class ComboSelectBody(BaseModel):
     name: str
 
-
-# ========== helpers ==========
+# ================== HELPERS ==================
 def outcome_from_dice(d: List[int]) -> str:
-    if len(d) == 3 and d[0] == d[1] == d[2]:
-        return "Triple"
-    return "Xỉu" if sum(d) <= 10 else "Tài"
+    if len(d)==3 and d[0]==d[1]==d[2]: return "Triple"
+    return "Xỉu" if sum(d)<=10 else "Tài"
 
-
-# ========== Public API ==========
+# ================== PUBLIC API ==================
 public = APIRouter()
 
-
 @public.get("/health")
-def health():
-    return {"ok": True}
-
+def health(): return {"ok": True}
 
 @public.get("/algo_list")
 def algo_list(request: Request):
     ai = get_ai(request)
-    return {"algorithms": [n for n, _ in ai.algorithms]}
-
+    return {"algorithms": [n for n,_ in ai.algorithms]}
 
 # ---- KHÓA về MIX (bỏ qua lựa chọn) ----
 @public.post("/set_algo")
 def set_algo(body: AlgoSelectBody, request: Request):
     ai = get_ai(request)
-    ai.current_algo_index = next((i for i, (n, _) in enumerate(ai.algorithms) if n == "algo_mix"), ai.current_algo_index)
+    ai.current_algo_index = next((i for i,(n,_) in enumerate(ai.algorithms) if n=="algo_mix"), ai.current_algo_index)
     return {"ok": True, "current_algo": "algo_mix"}
-
 
 @public.get("/algo_stats")
 def algo_stats(request: Request):
-    ai = get_ai(request)
-    return ai.summary().get("per_algo")
-
+    ai = get_ai(request); return ai.summary().get("per_algo")
 
 @public.get("/export_stats")
 def export_stats(request: Request):
-    ai = get_ai(request)
-    csv = ai.export_algo_stats_csv()
+    ai = get_ai(request); csv = ai.export_algo_stats_csv()
     return PlainTextResponse(csv, media_type="text/csv")
-
 
 @public.get("/combo_list")
 def combo_list(request: Request):
     ai = get_ai(request)
-    return {"combo_algorithms": [n for n, _ in ai.combo_strategies]}
-
+    return {"combo_algorithms": [n for n,_ in ai.combo_strategies]}
 
 @public.post("/set_combo")
 def set_combo(body: ComboSelectBody, request: Request):
     ai = get_ai(request)
-    ai.current_combo_idx = next(
-        (i for i, (n, _) in enumerate(ai.combo_strategies) if n == "combo_mix"), ai.current_combo_idx
-    )
+    ai.current_combo_idx = next((i for i,(n,_) in enumerate(ai.combo_strategies) if n=="combo_mix"), ai.current_combo_idx)
     return {"ok": True, "current_combo_algo": "combo_mix"}
-
 
 @public.get("/combo_stats")
 def combo_stats(request: Request):
-    ai = get_ai(request)
-    return ai.combo_stats
-
+    ai = get_ai(request); return ai.combo_stats
 
 @public.get("/export_combo_stats")
 def export_combo_stats(request: Request):
-    ai = get_ai(request)
-    csv = ai.export_combo_stats_csv()
+    ai = get_ai(request); csv = ai.export_combo_stats_csv()
     return PlainTextResponse(csv, media_type="text/csv")
-
 
 @public.post("/step1_predict")
 def step1_predict(body: Step1Body, request: Request):
-    ai = get_ai(request)
+    ai   = get_ai(request)
     sess = get_sess(request)
 
-    if body.bankroll_vnd is not None:
-        sess.bank_vnd = max(0, int(body.bankroll_vnd))
-    if body.fib_base_vnd is not None:
-        sess.fib_base = max(0, int(body.fib_base_vnd))
-    if body.fib_max_step is not None:
-        sess.fib_max = int(body.fib_max_step)
+    # bankroll + fib
+    if body.bankroll_vnd is not None: sess.bank_vnd  = max(0, int(body.bankroll_vnd))
+    if body.fib_base_vnd is not None: sess.fib_base  = max(0, int(body.fib_base_vnd))
+    if body.fib_max_step is not None: sess.fib_max   = int(body.fib_max_step)
 
+    # nếu có dữ liệu ván trước thì cập nhật trước
     if body.prev_dice:
         ai.update_with_real(body.prev_md5 or "", outcome_from_dice(body.prev_dice), body.prev_dice)
 
-    out = ai.next_prediction(
-        md5_value=body.next_md5 or "", alpha=body.alpha, window_n=body.window_n, temperature=body.temperature
-    )
+    out = ai.next_prediction(md5_value=body.next_md5 or "",
+                             alpha=body.alpha, window_n=body.window_n, temperature=body.temperature)
 
     next_bet = sess.next_fib_bet()
     sess.last_bet_vnd = next_bet
@@ -291,62 +247,52 @@ def step1_predict(body: Step1Body, request: Request):
         "echo": {"promote_next_md5_to_prev": body.next_md5 or ""},
     }
 
-
 def _seq_preview(sess: SessionItem):
     sess.ensure_seq()
-    start = max(0, sess.fib_idx)
-    end = min(start + 8, len(sess.fib_seq))
+    start = max(0, sess.fib_idx); end = min(start+8, len(sess.fib_seq))
     return [x * sess.fib_base for x in sess.fib_seq[start:end]]
-
 
 @public.post("/step2_confirm")
 def step2_confirm(body: Step2Body, request: Request):
-    ai = get_ai(request)
+    ai   = get_ai(request)
     sess = get_sess(request)
     if body.dice:
-        real = outcome_from_dice(body.dice)
-        dice = body.dice
+        real = outcome_from_dice(body.dice); dice = body.dice
     elif body.real:
-        real = body.real
-        dice = None
+        real = body.real; dice = None
     else:
-        return {"error": "Cần real hoặc dice"}
+        return {"error":"Cần real hoặc dice"}
 
-    rec = ai.update_with_real(body.md5 or "", real, dice or [0, 0, 0])
+    rec = ai.update_with_real(body.md5 or "", real, dice or [0,0,0])
     sess.apply_round_result(rec["win"])
     return {
         "record": rec,
         "summary": ai.summary(),
-        "fib": {"bankroll_vnd": sess.bank_vnd, "idx": sess.fib_idx, "next_bet_vnd": sess.next_fib_bet(), "seq_preview": _seq_preview(sess)},
+        "fib": {"bankroll_vnd": sess.bank_vnd, "idx": sess.fib_idx,
+                "next_bet_vnd": sess.next_fib_bet(), "seq_preview": _seq_preview(sess)}
     }
 
-
 @public.get("/summary")
-def summary(request: Request):
-    return get_ai(request).summary()
-
+def summary(request: Request): return get_ai(request).summary()
 
 app.include_router(public)
 
-# ========== admin ==========
+# ================== ADMIN ==================
 admin = APIRouter(dependencies=[Depends(verify_admin)])
-
 
 @admin.post("/reset")
 def reset_all(request: Request):
-    ai = get_ai(request)
-    ai.reset()
+    ai = get_ai(request); ai.reset()
     # khoá lại về MIX
-    ai.current_algo_index = next((i for i, (n, _) in enumerate(ai.algorithms) if n == "algo_mix"), 0)
-    ai.current_combo_idx = next((i for i, (n, _) in enumerate(ai.combo_strategies) if n == "combo_mix"), 0)
+    ai.current_algo_index = next((i for i,(n,_) in enumerate(ai.algorithms) if n=="algo_mix"), 0)
+    ai.current_combo_idx  = next((i for i,(n,_) in enumerate(ai.combo_strategies) if n=="combo_mix"), 0)
     sess = get_sess(request)
     sess.bank_vnd = sess.fib_base = sess.fib_idx = sess.last_bet_vnd = 0
     return {"ok": True}
 
-
 app.include_router(admin)
 
-# ========== UI ==========
+# ================== UI ==================
 PAGE = r"""
 <!doctype html><html lang="vi"><head>
 <meta charset="utf-8"/>
@@ -488,21 +434,18 @@ function formatVND(n){return (n||0).toLocaleString('vi-VN')+' đ'}
 function render(whereId, roundData, nextData){
   const pct=(nextData.prob*100).toFixed(2), combo=nextData.combo?nextData.combo.join('-'):'—', pcombo=(nextData.p_combo*100).toFixed(2);
   const wrAll=(nextData.summary.win_rate*100).toFixed(1);
-  const fib = nextData.fib||{}; const seq = (fib.seq_preview||[]).map(x=>formatVND(x)).join(' → ') || '—';
+  const fib = nextData.fib||{}; const seq=(fib.seq_preview||[]).map(x=>formatVND(x)).join(' → ')||'—';
   g(whereId).innerHTML = `
-    <div class="out">
-      <div style="font-weight:700;margin-bottom:6px">Ván vừa rồi</div>
+    <div class="out"><div style="font-weight:700;margin-bottom:6px">Ván vừa rồi</div>
       <div>Real: <b>${roundData.record?.real??'—'}</b> • Guess: <b>${roundData.record?.guess??'—'}</b> → ${roundData.record?.win===true?'<b style="color:#10b981">WIN</b>':roundData.record?.win===false?'<b style="color:#ef4444">LOSE</b>':'—'}</div>
       <div class="small">Tổng ván: ${nextData.summary.total_rounds} • Win% all: ${wrAll}% • Algo: ${nextData.summary.current_algo}</div>
     </div>
-    <div class="out">
-      <div style="font-weight:700;margin-bottom:6px">Dự đoán ván KẾ</div>
+    <div class="out"><div style="font-weight:700;margin-bottom:6px">Dự đoán ván KẾ</div>
       <div><b>${nextData.next_guess}</b> — <b>${pct}%</b> • Combo: <b>${combo}</b> (sum=${nextData.sum}, p=${pcombo}%)</div>
       <div class="small">Combo strategy: ${nextData.summary.current_combo_algo}</div>
     </div>
-    <div class="out">
-      <div style="font-weight:700;margin-bottom:6px">Gợi ý tiền cược (Fibonacci – VND)</div>
-      <div>Vốn: <b class="vnd">${formatVND(fib.bankroll_vnd||0)}</b> • Đơn vị: <b class="vnd">${formatVND(fib.base_vnd||0)}</b> • Bước hiện tại: <b>${fib.idx??0}/${fib.max??12}</b></div>
+    <div class="out"><div style="font-weight:700;margin-bottom:6px">Gợi ý tiền cược (Fibonacci – VND)</div>
+      <div>Vốn: <b class="vnd">${formatVND(fib.bankroll_vnd||0)}</b> • Đơn vị: <b class="vnd">${formatVND(fib.base_vnd||0)}</b> • Bước hiện tại: <b>${(fib.idx??0)}/${(fib.max??12)}</b></div>
       <div>Gợi ý cược ván tới: <b class="vnd">${formatVND(fib.next_bet_vnd||0)}</b></div>
       <div class="small">Chuỗi tiếp theo: ${seq}</div>
     </div>`;
@@ -510,7 +453,7 @@ function render(whereId, roundData, nextData){
 
 const uiState={alpha:1,windowN:null,temp:0.85};
 let s2Busy=false;
-const lastRoundForB1={prevDice:null, prevMd5:null}; // lưu để đổ ngược về B1
+const lastRoundForB1={prevDice:null, prevMd5:null};
 
 async function doStep1(){
   const prevDice=(valInt('s1-d1')&&valInt('s1-d2')&&valInt('s1-d3'))?[valInt('s1-d1'),valInt('s1-d2'),valInt('s1-d3')]:null;
