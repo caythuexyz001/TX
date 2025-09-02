@@ -5,19 +5,15 @@ import hashlib
 import io
 import random
 import time
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple, Callable
-
+from dataclasses import dataclass
+from typing import Callable, Dict, List, Optional, Tuple
 
 Label = str  # "Tài" | "Xỉu" | "Triple"
 
 
+# --------- utils ----------
 def _label_from_sum(s: int) -> Label:
-    if s <= 10:
-        return "Xỉu"
-    if s >= 11:
-        return "Tài"
-    return "Xỉu"
+    return "Xỉu" if s <= 10 else "Tài"
 
 
 def _label_from_dice(d: List[int]) -> Label:
@@ -32,14 +28,13 @@ def _safe_probs(p: Dict[Label, float]) -> Dict[Label, float]:
 
 
 def _hash_feature(md5: str) -> float:
-    """Một đặc trưng nhỏ từ MD5 (ổn định, không giải mã)."""
+    """Đặc trưng ổn định từ chuỗi MD5 (không phải giải mã)."""
     if not md5:
         return 0.0
     try:
         h = hashlib.md5(md5.encode("utf-8")).hexdigest()
     except Exception:
         h = md5
-    # Lấy 2 ký tự cuối quy về [0..1)
     try:
         v = int(h[-2:], 16) / 255.0
     except Exception:
@@ -47,6 +42,7 @@ def _hash_feature(md5: str) -> float:
     return v
 
 
+# --------- dataclasses ----------
 @dataclass
 class Record:
     ts: float
@@ -63,20 +59,24 @@ class Stats:
     total: int = 0
     wins: int = 0
 
+    @property
+    def win_rate(self) -> float:
+        return (self.wins / self.total) if self.total else 0.0
+
     def add(self, win: bool):
         self.total += 1
         if win:
             self.wins += 1
 
-    @property
-    def win_rate(self) -> float:
-        return (self.wins / self.total) if self.total else 0.0
 
-
+# --------- core AI ----------
 class TaiXiuAI:
     """
-    AI đơn giản nhưng đủ: có nhiều thuật toán con và bản 'mix' gộp trung bình.
-    ĐÃ KHOÁ cố định dùng algo_mix + combo_mix, không tự đổi nữa.
+    Lõi dự đoán Tai Xỉu (demo):
+    - Nhiều thuật toán xác suất label (dice): freq, md5_bias, momentum, dirichlet, mix
+    - Nhiều chiến lược dự đoán combo (bộ 3 xúc xắc): center, edges, random, mix
+    - ĐÃ KHOÁ: luôn dùng algo_mix + combo_mix
+    - ĐÃ ÉP: combo khớp với label (Tài >=11, Xỉu <=10, Triple = [k,k,k])
     """
 
     def __init__(self):
@@ -85,31 +85,33 @@ class TaiXiuAI:
         self.combo_stats: Dict[str, Stats] = {}
         self.window_default = 20
 
-        # ===== Thuật toán =====
+        # --- thuật toán label ---
         self.algorithms: List[Tuple[str, Callable]] = [
             ("algo_freq", self._algo_freq),
             ("algo_md5_bias", self._algo_md5_bias),
             ("algo_recent_momentum", self._algo_recent_momentum),
             ("algo_dirichlet", self._algo_dirichlet),
-            ("algo_mix", self._algo_mix),  # <- bản gộp CUỐI CÙNG
+            ("algo_mix", self._algo_mix),  # bản gộp (để cuối)
         ]
 
-        # ===== Combo (dự đoán bộ 3 xúc xắc) =====
+        # --- chiến lược combo ---
         self.combo_strategies: List[Tuple[str, Callable]] = [
             ("combo_center", self._combo_center),
             ("combo_edges", self._combo_edges),
             ("combo_random", self._combo_random),
-            ("combo_mix", self._combo_mix),  # <- bản gộp CUỐI CÙNG
+            ("combo_mix", self._combo_mix),  # bản gộp (để cuối)
         ]
 
-        # ===== KHÓA về bản mix (yêu cầu của bạn) =====
+        # --- khoá về MIX ---
         self.fixed_algo_name = "algo_mix"
         self.fixed_combo_name = "combo_mix"
         self.current_algo_index = self._index_of(self.algorithms, self.fixed_algo_name)
         self.current_combo_idx = self._index_of(self.combo_strategies, self.fixed_combo_name)
 
-    # ---------------- public API ----------------
+        # cache xác suất tổng
+        self._sum_cache: Dict[int, float] = {}
 
+    # ---------- public API ----------
     def next_prediction(
         self,
         md5_value: str = "",
@@ -117,21 +119,23 @@ class TaiXiuAI:
         window_n: Optional[int] = None,
         temperature: float = 0.85,
     ) -> Dict:
-        # luôn ép về bản mix (nếu lỡ ai gọi set_algo khác)
+        # ép index về MIX (phòng khi có ai gọi đổi)
         self.current_algo_index = self._index_of(self.algorithms, self.fixed_algo_name, self.current_algo_index)
         self.current_combo_idx = self._index_of(self.combo_strategies, self.fixed_combo_name, self.current_combo_idx)
 
+        # 1) xác suất label
         algo_name, algo_fn = self.algorithms[self.current_algo_index]
         probs = algo_fn(md5_value=md5_value, alpha=alpha, window_n=window_n, temperature=temperature)
         probs = _safe_probs(probs)
-
-        # chọn label theo max prob
         label = max(probs.items(), key=lambda kv: kv[1])[0]
         prob_label = probs[label]
 
-        # combo
+        # 2) combo thô (từ chiến lược combo)
         combo_name, combo_fn = self.combo_strategies[self.current_combo_idx]
-        combo, p_combo = combo_fn(md5_value=md5_value, temperature=temperature)
+        raw_combo, _ = combo_fn(md5_value=md5_value, temperature=temperature)
+
+        # 3) ÉP combo khớp label
+        combo, p_combo = self._force_combo_match_label(label, raw_combo)
 
         return {
             "label": label,
@@ -145,9 +149,9 @@ class TaiXiuAI:
         }
 
     def update_with_real(self, md5: str, real_label: Label, dice: Optional[List[int]]) -> Dict:
+        """Ghi nhận 1 ván đã có kết quả (để học thống kê)."""
         if dice is None:
             dice = [0, 0, 0]
-        # guess là dự đoán cuối cùng đã dùng algo hiện tại
         last_pred = self.next_prediction(md5_value=md5)
         guess = last_pred["label"]
         win = (guess == real_label)
@@ -163,7 +167,6 @@ class TaiXiuAI:
         )
         self.records.append(rec)
 
-        # thống kê thuật toán
         self._stat_inc(self.per_algo, rec.algo, rec.win)
         self._stat_inc(self.combo_stats, self.combo_strategies[self.current_combo_idx][0], rec.win)
 
@@ -217,15 +220,13 @@ class TaiXiuAI:
         self.records.clear()
         self.per_algo.clear()
         self.combo_stats.clear()
-        # luôn khoá lại về MIX
         self.current_algo_index = self._index_of(self.algorithms, self.fixed_algo_name)
         self.current_combo_idx = self._index_of(self.combo_strategies, self.fixed_combo_name)
 
     def cleanup(self):
-        # để tương thích với code cũ (không làm gì)
         return
 
-    # ---------------- internal helpers ----------------
+    # ---------- helpers ----------
     def _index_of(self, items: List[Tuple[str, Callable]], name: str, default_idx: int = 0) -> int:
         for i, (n, _) in enumerate(items):
             if n == name:
@@ -237,7 +238,7 @@ class TaiXiuAI:
             table[key] = Stats()
         table[key].add(win)
 
-    # ----- thuật toán xác suất label -----
+    # ===== thuật toán xác suất label =====
     def _recent_counts(self, window_n: Optional[int]) -> Dict[Label, int]:
         n = window_n or self.window_default
         last = self.records[-n:] if n > 0 else self.records[:]
@@ -247,7 +248,6 @@ class TaiXiuAI:
         return c
 
     def _algo_freq(self, **kw) -> Dict[Label, float]:
-        """Tần suất nhãn gần đây + một ít làm trơn."""
         alpha = max(1, int(kw.get("alpha", 1)))
         counts = self._recent_counts(kw.get("window_n"))
         base = {"Tài": 0.485, "Xỉu": 0.485, "Triple": 0.03}
@@ -255,16 +255,13 @@ class TaiXiuAI:
         return _safe_probs(p)
 
     def _algo_md5_bias(self, **kw) -> Dict[Label, float]:
-        """Thiên hướng nhẹ theo đặc trưng MD5 (chỉ để đa dạng hoá)."""
         f = _hash_feature(kw.get("md5_value", ""))
-        # lệch 2 phía theo feature
         p_t = 0.45 + 0.15 * f
         p_x = 0.45 + 0.15 * (1.0 - f)
-        p_tri = 0.10 * (0.5 - abs(f - 0.5))  # rất nhỏ
+        p_tri = 0.10 * (0.5 - abs(f - 0.5))  # nhỏ
         return _safe_probs({"Tài": p_t, "Xỉu": p_x, "Triple": p_tri})
 
     def _algo_recent_momentum(self, **kw) -> Dict[Label, float]:
-        """Nếu chuỗi gần đây nghiêng về phía nào thì tăng xác suất phía đó."""
         last = self.records[-8:]
         bias = sum(1 if r.real == "Tài" else -1 if r.real == "Xỉu" else 0 for r in last)
         p_t = 0.48 + 0.02 * bias
@@ -273,7 +270,6 @@ class TaiXiuAI:
         return _safe_probs({"Tài": p_t, "Xỉu": p_x, "Triple": p_tri})
 
     def _algo_dirichlet(self, **kw) -> Dict[Label, float]:
-        """Giống Dirichlet prior rất đơn giản."""
         alpha = max(1, int(kw.get("alpha", 1)))
         c = self._recent_counts(kw.get("window_n"))
         prior = {"Tài": alpha, "Xỉu": alpha, "Triple": max(1, alpha // 10)}
@@ -281,35 +277,27 @@ class TaiXiuAI:
         return _safe_probs(p)
 
     def _algo_mix(self, **kw) -> Dict[Label, float]:
-        """Trung bình các thuật toán khác (đÃ khoá dùng mặc định)."""
-        names = [n for n, _ in self.algorithms if n != "algo_mix"]
-        ps = []
-        for n, fn in self.algorithms:
-            if n == "algo_mix":
-                continue
-            ps.append(fn(**kw))
-        if not ps:
+        others = [fn for name, fn in self.algorithms if name != "algo_mix"]
+        if not others:
             return {"Tài": 0.485, "Xỉu": 0.485, "Triple": 0.03}
         agg = {"Tài": 0.0, "Xỉu": 0.0, "Triple": 0.0}
-        for p in ps:
+        for fn in others:
+            p = fn(**kw)
             for k, v in p.items():
                 agg[k] += v
         for k in agg:
-            agg[k] /= len(ps)
+            agg[k] /= len(others)
         return _safe_probs(agg)
 
-    # ----- combo (dự đoán bộ xúc xắc) -----
+    # ===== combo strategies =====
     def _combo_center(self, **kw) -> Tuple[List[int], float]:
-        """Ưu tiên tổng 10-11 (trung tâm phân phối)."""
-        center_sums = [10, 11]
-        s = random.choice(center_sums)
+        # thiên về tổng trung tâm (10 hoặc 11)
+        s = random.choice([10, 11])
         d = self._sample_sum(s)
         return d, self._sum_prob(s)
 
     def _combo_edges(self, **kw) -> Tuple[List[int], float]:
-        """Ưu tiên tổng thấp/cao hiếm."""
-        edge_sums = [3, 4, 17, 18]
-        s = random.choice(edge_sums)
+        s = random.choice([3, 4, 17, 18])
         d = self._sample_sum(s)
         return d, self._sum_prob(s)
 
@@ -318,24 +306,52 @@ class TaiXiuAI:
         return d, self._sum_prob(sum(d))
 
     def _combo_mix(self, **kw) -> Tuple[List[int], float]:
-        cand = []
+        cands: List[Tuple[List[int], float]] = []
         for name, fn in self.combo_strategies:
             if name == "combo_mix":
                 continue
             d, p = fn(**kw)
-            cand.append((d, p))
-        if not cand:
+            cands.append((d, p))
+        if not cands:
             return self._combo_random(**kw)
-        # chọn theo xác suất p lớn nhất
-        d, p = max(cand, key=lambda x: x[1])
+        d, p = max(cands, key=lambda x: x[1])
         return d, p
 
-    # --- xác suất gần đúng của tổng (đếm brute-force) ---
-    _sum_cache: Dict[int, float] = {}
+    # ===== ép combo khớp label =====
+    def _weighted_choice_by_sum(self, sums: List[int]) -> int:
+        weights = [self._sum_prob(s) for s in sums]
+        total = sum(weights) or 1.0
+        r = random.random() * total
+        acc = 0.0
+        for s, w in zip(sums, weights):
+            acc += w
+            if r <= acc:
+                return s
+        return sums[-1]
 
+    def _force_combo_match_label(self, label: str, combo: List[int]) -> Tuple[List[int], float]:
+        if label == "Triple":
+            k = random.randint(1, 6)
+            return [k, k, k], 6.0 / 216.0  # xác suất nhóm triple (bất kỳ k) ~ 2.777%
+
+        s = sum(combo)
+        if label == "Tài" and s >= 11:
+            return combo, self._sum_prob(s)
+        if label == "Xỉu" and s <= 10:
+            return combo, self._sum_prob(s)
+
+        # lệch → tạo lại combo phù hợp
+        if label == "Tài":
+            target_sums = list(range(11, 19))
+        else:
+            target_sums = list(range(3, 11))
+        s_new = self._weighted_choice_by_sum(target_sums)
+        new_combo = self._sample_sum(s_new)
+        return new_combo, self._sum_prob(s_new)
+
+    # ===== xác suất tổng & dựng combo theo tổng =====
     def _sum_prob(self, s: int) -> float:
         if not self._sum_cache:
-            # precompute
             freq = {k: 0 for k in range(3, 19)}
             for a in range(1, 7):
                 for b in range(1, 7):
@@ -347,7 +363,6 @@ class TaiXiuAI:
         return float(self._sum_cache.get(s, 0.0))
 
     def _sample_sum(self, s: int) -> List[int]:
-        """Tạo bộ 3 xúc xắc có tổng là s (simple constructive)."""
         s = max(3, min(18, s))
         for _ in range(30):
             a = random.randint(1, 6)
@@ -355,5 +370,4 @@ class TaiXiuAI:
             c = s - a - b
             if 1 <= c <= 6:
                 return [a, b, c]
-        # fallback
         return [random.randint(1, 6) for _ in range(3)]
