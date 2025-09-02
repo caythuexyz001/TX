@@ -64,6 +64,35 @@ class TaiXiuAI:
       - Enforces combo to match predicted label
     """
 
+        # ---------- MIX cho combo (quên chưa thêm) ----------
+    def _combo_mix(self, **kw) -> Tuple[List[int], float]:
+        """
+        Gộp tất cả chiến lược combo khác (trừ chính nó) và chọn phương án
+        có xác suất tổng (p_combo) cao nhất. Đây là bản 'ensemble' cho combo.
+        """
+        cands: List[Tuple[List[int], float]] = []
+        for name, fn in self.combo_strategies:
+            if name == "combo_mix":
+                continue
+            try:
+                d, p = fn(**kw)
+                # bảo vệ dữ liệu xấu
+                if not (isinstance(d, list) and len(d) == 3 and all(1 <= int(x) <= 6 for x in d)):
+                    continue
+                cands.append((d, float(p)))
+            except Exception:
+                # nếu một chiến lược lỗi, bỏ qua
+                continue
+
+        if not cands:
+            # fallback an toàn
+            d = [random.randint(1, 6) for _ in range(3)]
+            return d, self._sum_prob(sum(d))
+
+        # chọn combo có p_combo lớn nhất
+        d, p = max(cands, key=lambda x: x[1])
+        return d, p
+
     def __init__(self):
         self.records: List[Record] = []
         self.per_algo: Dict[str, Stats] = {}
@@ -502,3 +531,4 @@ class TaiXiuAI:
             a=random.randint(1,6); b=random.randint(1,6); c=s-a-b
             if 1<=c<=6: return [a,b,c]
         return [random.randint(1,6) for _ in range(3)]
+
