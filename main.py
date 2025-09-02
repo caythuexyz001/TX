@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from predictor import TaiXiuAI
 
 # ================== CẤU HÌNH ==================
-ADMIN_API_KEY = "01279992564Aa!"       # đổi nếu muốn
+ADMIN_API_KEY = "01279992564Aa!"       # admin reset
 PER_IP_LIMIT  = (40, 60)                # 40 req / 60s / IP
 GLOBAL_LIMIT  = (600, 60)               # toàn server
 SESSION_IDLE_TTL = 60*60*12
@@ -129,7 +129,12 @@ def get_ai(request: Request, response: Optional[HTMLResponse]=None) -> TaiXiuAI:
     return SESSIONS[sid].ai
 
 def get_sess(request: Request) -> SessionItem:
-    return SESSIONS[request.cookies.get("txsid")]
+    # SAFE: nếu API bị gọi trước khi /ui set cookie → vẫn tạo session tạm
+    sid = request.cookies.get("txsid")
+    if not sid or sid not in SESSIONS:
+        sid = sid or uuid.uuid4().hex
+        SESSIONS[sid] = SessionItem()
+    return SESSIONS[sid]
 
 # ================== SCHEMAS ==================
 class Step1Body(BaseModel):
@@ -292,6 +297,21 @@ def reset_all(request: Request):
 
 app.include_router(admin)
 
+# ================== DEBUG / ERROR HANDLER ==================
+@app.get("/debug/ping")
+def debug_ping():
+    try:
+        from predictor import TaiXiuAI as _T
+        return {"ok": True, "msg": "predictor import OK", "algos": len(_T().algorithms)}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return JSONResponse({"ok": False, "err": f"{type(e).__name__}: {e}"}, status_code=500)
+
+@app.exception_handler(Exception)
+async def all_errors(request: Request, exc: Exception):
+    import traceback; traceback.print_exc()
+    return PlainTextResponse(f"Server error: {type(exc).__name__}: {exc}", status_code=500)
+
 # ================== UI ==================
 PAGE = r"""
 <!doctype html><html lang="vi"><head>
@@ -428,6 +448,7 @@ function swap(hideId,showId){g(hideId).classList.add('hidden');g(showId).classLi
 function clearStep1(){['s1-d1','s1-d2','s1-d3','s1-next-md5'].forEach(id=>g(id).value='')}
 function lockStep2(){g('s2-locked').classList.remove('hidden');['s2-md5','s2-d1','s2-d2','s2-d3','btn-real-tai','btn-real-xiu','btn-real-tri','btn-confirm-dice'].forEach(id=>g(id).setAttribute('disabled','disabled'))}
 function unlockStep2(){g('s2-locked').classList.add('hidden');['s2-md5','s2-d1','s2-d2','s2-d3','btn-real-tai','btn-real-xiu','btn-real-tri','btn-confirm-dice'].forEach(id=>g(id).removeAttribute('disabled'))}
+function copyLink(){navigator.clipboard.writeText(location.href).then(()=>toast('Đã copy link'))}
 
 function formatVND(n){return (n||0).toLocaleString('vi-VN')+' đ'}
 
@@ -544,6 +565,12 @@ def root():
 
 @app.get("/ui", response_class=HTMLResponse)
 def ui(request: Request):
-    resp = HTMLResponse(content=PAGE)
-    _ = get_ai(request, resp)  # tạo session + cookie
-    return resp
+    try:
+        resp = HTMLResponse(content=PAGE)
+        _ = get_ai(request, resp)  # tạo session + set-cookie
+        return resp
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return HTMLResponse(
+            f"<h3>UI lỗi khởi tạo</h3><pre>{type(e).__name__}: {str(e)}</pre>", status_code=500
+        )
