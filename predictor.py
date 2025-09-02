@@ -264,7 +264,6 @@ class TaiXiuAI:
                             if prev is not None:
                                 trans[prev][cur] += 1
                             prev = cur
-                        # estimate next state = last state transition
                         start = prev or "Tài"
                         p_t = trans[start]["Tài"]; p_x = trans[start]["Xỉu"]
                         return _safe_probs({"Tài": p_t, "Xỉu": p_x, "Triple": 0.03})
@@ -328,7 +327,6 @@ class TaiXiuAI:
                     last = self.records[-w:]
                     odd = sum(1 for r in last if r.dice and (sum(r.dice)%2==1))
                     even = len(last) - odd
-                    # odd→倾向 Xỉu nhẹ, even→Tài nhẹ (tuỳ chọn)
                     p_t = 0.48 + 0.02*(even - odd)/(w or 1)
                     p_x = 0.48 - 0.02*(even - odd)/(w or 1)
                     return _safe_probs({"Tài": p_t, "Xỉu": p_x, "Triple": 0.04})
@@ -345,7 +343,6 @@ class TaiXiuAI:
             def make(rnd=rnd):
                 def fn(**kw):
                     base = {"Tài": 0.485, "Xỉu": 0.485, "Triple": 0.03}
-                    # tiny jitter
                     j = {k: v + (rnd.random()-0.5)*0.02 for k,v in base.items()}
                     return _safe_probs(j)
                 return fn
@@ -379,7 +376,6 @@ class TaiXiuAI:
         # 2
 
     def _register_combo_bands_family(self):
-        # several small bands around common sums
         bands = [(7,9),(8,10),(11,13),(12,14),(5,7),(14,16)]
         temps = [1,2,3,4,5,6,7,8]
         for lo,hi in bands:
@@ -388,7 +384,6 @@ class TaiXiuAI:
                 def make(lo=lo,hi=hi,t=t):
                     def fn(**kw):
                         rng = list(range(lo,hi+1))
-                        # temperature-like reweighting
                         weights = [self._sum_prob(s)**(1.0/t) for s in rng]
                         total = sum(weights) or 1.0
                         r = random.random()*total; acc=0.0
@@ -402,7 +397,6 @@ class TaiXiuAI:
         # 6*8 = 48
 
     def _register_combo_mod_family(self):
-        # sums with modulo patterns (for diversity)
         for mod in (2,3,4):
             for r in range(mod):
                 name = f"combo_mod{mod}_r{r}"
@@ -414,21 +408,20 @@ class TaiXiuAI:
                         return self._sample_sum(s), self._sum_prob(s)
                     return fn
                 self.combo_strategies.append((name, make()))
-        # 2* + 3* + 4* ≈ 9
+        # ~9
 
     def _register_combo_md5_family(self):
-        # bias sums by md5 bytes (choose center/edge depending on byte)
         for bi in range(8):
             name = f"combo_md5b{bi}"
             def make(bi=bi):
                 def fn(**kw):
                     f = _hash_feature(kw.get("md5_value",""), bi)
                     if f > 0.66:
-                        pool = list(range(11,18))  # tilting high
+                        pool = list(range(11,18))
                     elif f < 0.33:
-                        pool = list(range(3,10))   # tilting low
+                        pool = list(range(3,10))
                     else:
-                        pool = list(range(9,12))   # center
+                        pool = list(range(9,12))
                     s = self._weighted_choice_by_sum(pool)
                     return self._sample_sum(s), self._sum_prob(s)
                 return fn
@@ -436,7 +429,6 @@ class TaiXiuAI:
         # 8
 
     def _register_combo_random_family(self):
-        # several fixed seeds
         for s in range(30):
             name = f"combo_random_s{s}"
             rnd = random.Random(s)
