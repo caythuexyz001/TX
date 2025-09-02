@@ -10,10 +10,9 @@ from pydantic import BaseModel, Field
 
 from predictor import TaiXiuAI
 
-# ================== CẤU HÌNH ==================
-ADMIN_API_KEY = "01279992564Aa!"       # admin reset
-PER_IP_LIMIT  = (40, 60)                # 40 req / 60s / IP
-GLOBAL_LIMIT  = (600, 60)               # toàn server
+ADMIN_API_KEY = "01279992564Aa!"     # admin reset
+PER_IP_LIMIT  = (40, 60)             # 40 req / 60s
+GLOBAL_LIMIT  = (600, 60)
 SESSION_IDLE_TTL = 60*60*12
 SESSION_MAX   = 800
 
@@ -22,22 +21,16 @@ app = FastAPI(title="TaiXiu AI", docs_url=None, redoc_url=None, openapi_url=None
 _ip_hits: Dict[str, Deque[float]] = defaultdict(deque)
 _global_hits: Deque[float] = deque()
 
-# ================== RATE LIMIT + SECURITY HEADERS ==================
 def rate_limiter(ip: str):
     now = time.time()
     per, win = PER_IP_LIMIT
     dq = _ip_hits[ip]
-    while dq and now - dq[0] > win:
-        dq.popleft()
-    if len(dq) >= per:
-        return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
+    while dq and now - dq[0] > win: dq.popleft()
+    if len(dq) >= per: return JSONResponse({"detail": "Too Many Requests"}, status_code=429)
     dq.append(now)
-
     gper, gwin = GLOBAL_LIMIT
-    while _global_hits and now - _global_hits[0] > gwin:
-        _global_hits.popleft()
-    if len(_global_hits) >= gper:
-        return JSONResponse({"detail": "Server Busy"}, status_code=429)
+    while _global_hits and now - _global_hits[0] > gwin: _global_hits.popleft()
+    if len(_global_hits) >= gper: return JSONResponse({"detail": "Server Busy"}, status_code=429)
     _global_hits.append(now)
 
 @app.middleware("http")
@@ -49,7 +42,7 @@ async def sec_limit(request: Request, call_next):
         "Cache-Control": "no-store",
     }
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
-    if request.url.path not in ("/ui", "/health"):
+    if request.url.path not in ("/ui", "/health", "/"):
         rl = rate_limiter(ip)
         if rl:
             for k, v in headers.items(): rl.headers[k] = v
@@ -62,7 +55,7 @@ def verify_admin(x_api_key: str = Header(None)):
     if x_api_key != ADMIN_API_KEY:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-# ================== SESSION ==================
+# ---------- session ----------
 class SessionItem:
     def __init__(self):
         self.ai = TaiXiuAI()
@@ -74,21 +67,18 @@ class SessionItem:
         self.fib_idx: int = 0
         self.fib_seq: List[int] = [1,1]
         self.last_bet_vnd: int = 0
-
     def ensure_seq(self):
         self.fib_seq = [1,1]
         while len(self.fib_seq) < max(2, self.fib_max):
             self.fib_seq.append(self.fib_seq[-1] + self.fib_seq[-2])
-
     def next_fib_bet(self) -> int:
         if self.fib_base <= 0 or self.bank_vnd <= 0: return 0
         self.ensure_seq()
         idx = max(0, min(self.fib_idx, len(self.fib_seq)-1))
         raw = self.fib_seq[idx] * self.fib_base
-        cap = int(max(0, self.bank_vnd) * 0.2)  # không quá 20% vốn
+        cap = int(max(0, self.bank_vnd) * 0.2)  # ≤20% vốn
         bet = min(raw, cap if cap>0 else raw)
         return (bet // 1000) * 1000
-
     def apply_round_result(self, win: bool):
         bet = self.last_bet_vnd
         if bet>0:
@@ -129,14 +119,13 @@ def get_ai(request: Request, response: Optional[HTMLResponse]=None) -> TaiXiuAI:
     return SESSIONS[sid].ai
 
 def get_sess(request: Request) -> SessionItem:
-    # SAFE: nếu API bị gọi trước khi /ui set cookie → vẫn tạo session tạm
     sid = request.cookies.get("txsid")
     if not sid or sid not in SESSIONS:
         sid = sid or uuid.uuid4().hex
         SESSIONS[sid] = SessionItem()
     return SESSIONS[sid]
 
-# ================== SCHEMAS ==================
+# ---------- schemas ----------
 class Step1Body(BaseModel):
     prev_dice: Optional[List[int]] = None
     prev_md5: Optional[str] = None
@@ -155,16 +144,15 @@ class Step2Body(BaseModel):
 
 class AlgoSelectBody(BaseModel):
     name: str
-
 class ComboSelectBody(BaseModel):
     name: str
 
-# ================== HELPERS ==================
+# ---------- helpers ----------
 def outcome_from_dice(d: List[int]) -> str:
     if len(d)==3 and d[0]==d[1]==d[2]: return "Triple"
     return "Xỉu" if sum(d)<=10 else "Tài"
 
-# ================== PUBLIC API ==================
+# ---------- public API ----------
 public = APIRouter()
 
 @public.get("/health")
@@ -172,10 +160,8 @@ def health(): return {"ok": True}
 
 @public.get("/algo_list")
 def algo_list(request: Request):
-    ai = get_ai(request)
-    return {"algorithms": [n for n,_ in ai.algorithms]}
+    ai = get_ai(request); return {"algorithms": [n for n,_ in ai.algorithms]}
 
-# ---- KHÓA về MIX (bỏ qua lựa chọn) ----
 @public.post("/set_algo")
 def set_algo(body: AlgoSelectBody, request: Request):
     ai = get_ai(request)
@@ -193,8 +179,7 @@ def export_stats(request: Request):
 
 @public.get("/combo_list")
 def combo_list(request: Request):
-    ai = get_ai(request)
-    return {"combo_algorithms": [n for n,_ in ai.combo_strategies]}
+    ai = get_ai(request); return {"combo_algorithms": [n for n,_ in ai.combo_strategies]}
 
 @public.post("/set_combo")
 def set_combo(body: ComboSelectBody, request: Request):
@@ -221,9 +206,9 @@ def step1_predict(body: Step1Body, request: Request):
     if body.fib_base_vnd is not None: sess.fib_base  = max(0, int(body.fib_base_vnd))
     if body.fib_max_step is not None: sess.fib_max   = int(body.fib_max_step)
 
-    # nếu có dữ liệu ván trước thì cập nhật trước
+    # nếu có dữ liệu ván trước (dice) → chốt ngay trước khi dự đoán mới
     if body.prev_dice:
-        ai.update_with_real(body.prev_md5 or "", outcome_from_dice(body.prev_dice), body.prev_dice)
+        ai.finalize_with_real(body.prev_md5 or "", outcome_from_dice(body.prev_dice), body.prev_dice)
 
     out = ai.next_prediction(md5_value=body.next_md5 or "",
                              alpha=body.alpha, window_n=body.window_n, temperature=body.temperature)
@@ -233,21 +218,14 @@ def step1_predict(body: Step1Body, request: Request):
 
     sumy = ai.summary()
     return {
-        "next_guess": out["label"],
-        "prob": out["prob_label"],
-        "combo": out["combo"],
-        "sum": out["sum"],
-        "p_combo": out["p_combo"],
-        "algo": out["algo"],
-        "combo_algo": out.get("combo_algo"),
+        "next_guess": out["label"], "prob": out["prob_label"],
+        "combo": out["combo"], "sum": out["sum"], "p_combo": out["p_combo"],
+        "algo": out["algo"], "combo_algo": out.get("combo_algo"),
         "summary": sumy,
         "fib": {
-            "bankroll_vnd": sess.bank_vnd,
-            "base_vnd": sess.fib_base,
-            "idx": sess.fib_idx,
-            "max": sess.fib_max,
-            "next_bet_vnd": next_bet,
-            "seq_preview": _seq_preview(sess),
+            "bankroll_vnd": sess.bank_vnd, "base_vnd": sess.fib_base,
+            "idx": sess.fib_idx, "max": sess.fib_max,
+            "next_bet_vnd": next_bet, "seq_preview": _seq_preview(sess),
         },
         "echo": {"promote_next_md5_to_prev": body.next_md5 or ""},
     }
@@ -261,6 +239,8 @@ def _seq_preview(sess: SessionItem):
 def step2_confirm(body: Step2Body, request: Request):
     ai   = get_ai(request)
     sess = get_sess(request)
+    md5 = body.md5 or ""
+
     if body.dice:
         real = outcome_from_dice(body.dice); dice = body.dice
     elif body.real:
@@ -268,7 +248,7 @@ def step2_confirm(body: Step2Body, request: Request):
     else:
         return {"error":"Cần real hoặc dice"}
 
-    rec = ai.update_with_real(body.md5 or "", real, dice or [0,0,0])
+    rec = ai.finalize_with_real(md5, real, dice or [0,0,0])
     sess.apply_round_result(rec["win"])
     return {
         "record": rec,
@@ -282,13 +262,12 @@ def summary(request: Request): return get_ai(request).summary()
 
 app.include_router(public)
 
-# ================== ADMIN ==================
+# ---------- admin ----------
 admin = APIRouter(dependencies=[Depends(verify_admin)])
 
 @admin.post("/reset")
 def reset_all(request: Request):
     ai = get_ai(request); ai.reset()
-    # khoá lại về MIX
     ai.current_algo_index = next((i for i,(n,_) in enumerate(ai.algorithms) if n=="algo_mix"), 0)
     ai.current_combo_idx  = next((i for i,(n,_) in enumerate(ai.combo_strategies) if n=="combo_mix"), 0)
     sess = get_sess(request)
@@ -297,12 +276,12 @@ def reset_all(request: Request):
 
 app.include_router(admin)
 
-# ================== DEBUG / ERROR HANDLER ==================
+# ---------- debug & errors ----------
 @app.get("/debug/ping")
 def debug_ping():
     try:
         from predictor import TaiXiuAI as _T
-        return {"ok": True, "msg": "predictor import OK", "algos": len(_T().algorithms)}
+        return {"ok": True, "algos": len(_T().algorithms)}
     except Exception as e:
         import traceback; traceback.print_exc()
         return JSONResponse({"ok": False, "err": f"{type(e).__name__}: {e}"}, status_code=500)
@@ -312,9 +291,14 @@ async def all_errors(request: Request, exc: Exception):
     import traceback; traceback.print_exc()
     return PlainTextResponse(f"Server error: {type(exc).__name__}: {exc}", status_code=500)
 
-# ================== UI ==================
-PAGE = r"""
-<!doctype html><html lang="vi"><head>
+# ---------- UI ----------
+@app.get("/")
+def root():
+    return {"ok": True, "msg": "Open /ui for interface"}
+
+from fastapi.responses import HTMLResponse
+
+PAGE = r"""<!doctype html><html lang="vi"><head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
 <title>TaiXiu AI — #tool make by Boring</title>
@@ -365,46 +349,49 @@ input[type=text],input[type=number],select{width:100%;padding:12px 14px;border-r
     <div class="small">Chúc may mắn – tinh thần rực lửa 🇻🇳</div>
   </div>
 
-  <div id="step1" class="card">
-    <h2>B1. Dự đoán ván KẾ (tạo pending)</h2>
-    <div class="row">
-      <div><label>Dice 1 (ván trước)</label><input id="s1-d1" type="number" min="1" max="6"></div>
-      <div><label>Dice 2 (ván trước)</label><input id="s1-d2" type="number" min="1" max="6"></div>
-      <div><label>Dice 3 (ván trước)</label><input id="s1-d3" type="number" min="1" max="6"></div>
+  <!-- B1: KHÔNG dùng inline onsubmit (tránh lỗi). Dùng JS ở cuối. -->
+  <form id="step1Form">
+    <div id="step1" class="card">
+      <h2>B1. Dự đoán ván KẾ (tạo pending)</h2>
+      <div class="row">
+        <div><label>Dice 1 (ván trước)</label><input id="s1-d1" type="number" min="1" max="6" inputmode="numeric"></div>
+        <div><label>Dice 2 (ván trước)</label><input id="s1-d2" type="number" min="1" max="6" inputmode="numeric"></div>
+        <div><label>Dice 3 (ván trước)</label><input id="s1-d3" type="number" min="1" max="6" inputmode="numeric"></div>
+      </div>
+      <label>MD5 ván trước (tuỳ chọn)</label><input id="s1-prev-md5" type="text" autocomplete="off">
+      <label>MD5 ván kế (tuỳ chọn)</label><input id="s1-next-md5" type="text" autocomplete="off">
+      <div class="row">
+        <div><label>Alpha (>=1)</label><input id="s1-alpha" type="number" min="1" value="1" inputmode="numeric"></div>
+        <div><label>Window N</label><input id="s1-window" type="number" min="1" placeholder="vd 20" inputmode="numeric"></div>
+        <div><label>Temperature</label><input id="s1-temp" type="number" step="0.05" min="0.1" max="3.0" value="0.85" inputmode="decimal"></div>
+      </div>
+      <div class="row2" style="margin-top:6px">
+        <div><label>Thuật toán (cố định)</label><select id="algo-select" disabled><option>algo_mix</option></select></div>
+        <div><label>Combo (cố định)</label><select id="combo-select" disabled><option>combo_mix</option></select></div>
+      </div>
+      <div class="row">
+        <div><label>Vốn hiện có (VND)</label><input id="bankroll" type="number" min="0" step="1000" value="0" inputmode="numeric"></div>
+        <div><label>Đơn vị Fibo (VND)</label><input id="fib-base" type="number" min="0" step="1000" value="0" placeholder="gợi ý: 1% vốn" inputmode="numeric"></div>
+        <div><label>Tối đa bước Fibo</label><input id="fib-max" type="number" min="2" max="30" value="12" inputmode="numeric"></div>
+      </div>
+      <div class="actions">
+        <button id="btnPredict" type="submit" class="btn btn-primary">Cập nhật & Dự đoán</button>
+        <button class="btn btn-ghost" type="button" onclick="clearStep1()">Xoá ô nhập</button>
+      </div>
+      <div id="s1-out" class="out small"></div>
     </div>
-    <label>MD5 ván trước (tuỳ chọn)</label><input id="s1-prev-md5" type="text">
-    <label>MD5 ván kế (tuỳ chọn)</label><input id="s1-next-md5" type="text">
-    <div class="row">
-      <div><label>Alpha (>=1)</label><input id="s1-alpha" type="number" min="1" value="1"></div>
-      <div><label>Window N</label><input id="s1-window" type="number" min="1" placeholder="vd 20"></div>
-      <div><label>Temperature</label><input id="s1-temp" type="number" step="0.05" min="0.1" max="3.0" value="0.85"></div>
-    </div>
-    <div class="row2" style="margin-top:6px">
-      <div><label>Thuật toán (cố định)</label><select id="algo-select" disabled><option>algo_mix</option></select></div>
-      <div><label>Combo (cố định)</label><select id="combo-select" disabled><option>combo_mix</option></select></div>
-    </div>
-    <div class="row">
-      <div><label>Vốn hiện có (VND)</label><input id="bankroll" type="number" min="0" step="1000" value="0"></div>
-      <div><label>Đơn vị Fibo (VND)</label><input id="fib-base" type="number" min="0" step="1000" value="0" placeholder="gợi ý: 1% vốn"></div>
-      <div><label>Tối đa bước Fibo</label><input id="fib-max" type="number" min="2" max="30" value="12"></div>
-    </div>
-    <div class="actions">
-      <button class="btn btn-primary" onclick="doStep1()">Cập nhật & Dự đoán</button>
-      <button class="btn btn-ghost" onclick="clearStep1()">Xoá ô nhập</button>
-    </div>
-    <div id="s1-out" class="out small"></div>
-  </div>
+  </form>
 
   <div id="step2" class="card hidden">
     <div style="display:flex;justify-content:space-between;align-items:center">
       <h2>B2. Xác nhận kết quả thực</h2>
       <button class="btn btn-ghost" onclick="backToStep1()">← Quay về B1</button>
     </div>
-    <label>MD5 ván đã dự đoán</label><input id="s2-md5" type="text">
+    <label>MD5 ván đã dự đoán</label><input id="s2-md5" type="text" autocomplete="off">
     <div class="row">
-      <div><label>Dice 1</label><input id="s2-d1" type="number" min="1" max="6"></div>
-      <div><label>Dice 2</label><input id="s2-d2" type="number" min="1" max="6"></div>
-      <div><label>Dice 3</label><input id="s2-d3" type="number" min="1" max="6"></div>
+      <div><label>Dice 1</label><input id="s2-d1" type="number" min="1" max="6" inputmode="numeric"></div>
+      <div><label>Dice 2</label><input id="s2-d2" type="number" min="1" max="6" inputmode="numeric"></div>
+      <div><label>Dice 3</label><input id="s2-d3" type="number" min="1" max="6" inputmode="numeric"></div>
     </div>
     <div class="actions" style="grid-template-columns:repeat(3,1fr)">
       <button id="btn-real-tai" class="btn btn-ghost" onclick="confirmResult('Tài')">Thực tế: Tài</button>
@@ -443,13 +430,12 @@ function openMenu(){document.body.classList.add('sheet-open')}
 function closeMenu(){document.body.classList.remove('sheet-open')}
 function valInt(id){const v=g(id).value.trim();return v===''?null:parseInt(v,10)}
 function valStr(id){const v=g(id).value.trim();return v===''?null:v}
-function toast(msg){const t=g('toast');t.textContent=msg;t.style.opacity=1;t.style.transform='translateY(0)';setTimeout(()=>{t.style.opacity=0;t.style.transform='translateY(8px)'},1500)}
+function toast(msg){const t=g('toast');t.textContent=msg;t.style.opacity=1;t.style.transform='translateY(0)';setTimeout(()=>{t.style.opacity=0;t.style.transform='translateY(8px)'},1700)}
 function swap(hideId,showId){g(hideId).classList.add('hidden');g(showId).classList.remove('hidden')}
 function clearStep1(){['s1-d1','s1-d2','s1-d3','s1-next-md5'].forEach(id=>g(id).value='')}
 function lockStep2(){g('s2-locked').classList.remove('hidden');['s2-md5','s2-d1','s2-d2','s2-d3','btn-real-tai','btn-real-xiu','btn-real-tri','btn-confirm-dice'].forEach(id=>g(id).setAttribute('disabled','disabled'))}
 function unlockStep2(){g('s2-locked').classList.add('hidden');['s2-md5','s2-d1','s2-d2','s2-d3','btn-real-tai','btn-real-xiu','btn-real-tri','btn-confirm-dice'].forEach(id=>g(id).removeAttribute('disabled'))}
 function copyLink(){navigator.clipboard.writeText(location.href).then(()=>toast('Đã copy link'))}
-
 function formatVND(n){return (n||0).toLocaleString('vi-VN')+' đ'}
 
 function render(whereId, roundData, nextData){
@@ -458,7 +444,9 @@ function render(whereId, roundData, nextData){
   const fib = nextData.fib||{}; const seq=(fib.seq_preview||[]).map(x=>formatVND(x)).join(' → ')||'—';
   g(whereId).innerHTML = `
     <div class="out"><div style="font-weight:700;margin-bottom:6px">Ván vừa rồi</div>
-      <div>Real: <b>${roundData.record?.real??'—'}</b> • Guess: <b>${roundData.record?.guess??'—'}</b> → ${roundData.record?.win===true?'<b style="color:#10b981">WIN</b>':roundData.record?.win===false?'<b style="color:#ef4444">LOSE</b>':'—'}</div>
+      <div>Real: <b>${roundData.record?.real??'—'}</b> • Guess: <b>${roundData.record?.guess??'—'}</b> → ${
+        roundData.record?.win===true?'<b style="color:#10b981">WIN</b>':
+        roundData.record?.win===false?'<b style="color:#ef4444">LOSE</b>':'—'}</div>
       <div class="small">Tổng ván: ${nextData.summary.total_rounds} • Win% all: ${wrAll}% • Algo: ${nextData.summary.current_algo}</div>
     </div>
     <div class="out"><div style="font-weight:700;margin-bottom:6px">Dự đoán ván KẾ</div>
@@ -477,69 +465,98 @@ let s2Busy=false;
 const lastRoundForB1={prevDice:null, prevMd5:null};
 
 async function doStep1(){
-  const prevDice=(valInt('s1-d1')&&valInt('s1-d2')&&valInt('s1-d3'))?[valInt('s1-d1'),valInt('s1-d2'),valInt('s1-d3')]:null;
-  uiState.alpha=parseInt(g('s1-alpha').value||'1',10);
-  uiState.windowN=valInt('s1-window');
-  uiState.temp=parseFloat((g('s1-temp').value||'0.85'));
+  try{
+    const prevDice=(valInt('s1-d1')&&valInt('s1-d2')&&valInt('s1-d3'))?[valInt('s1-d1'),valInt('s1-d2'),valInt('s1-d3')]:null;
+    uiState.alpha=parseInt(g('s1-alpha').value||'1',10);
+    uiState.windowN=valInt('s1-window');
+    uiState.temp=parseFloat((g('s1-temp').value||'0.85'));
 
-  const body={
-    prev_dice: prevDice,
-    prev_md5: g('s1-prev-md5').value || null,
-    next_md5: g('s1-next-md5').value || null,
-    alpha: uiState.alpha, window_n: uiState.windowN, temperature: uiState.temp,
-    bankroll_vnd: valInt('bankroll'), fib_base_vnd: valInt('fib-base'), fib_max_step: valInt('fib-max')
-  };
+    const body={
+      prev_dice: prevDice,
+      prev_md5: g('s1-prev-md5').value || null,
+      next_md5: g('s1-next-md5').value || null,
+      alpha: uiState.alpha, window_n: uiState.windowN, temperature: uiState.temp,
+      bankroll_vnd: valInt('bankroll'), fib_base_vnd: valInt('fib-base'), fib_max_step: valInt('fib-max')
+    };
 
-  const res=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const data=await res.json();
+    const res=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!res.ok){
+      const t=await res.text();
+      console.error('step1_predict failed', res.status, t);
+      toast('Lỗi dự đoán: ' + res.status);
+      return;
+    }
+    const data=await res.json();
 
-  if(data.echo&&data.echo.promote_next_md5_to_prev){ g('s2-md5').value=data.echo.promote_next_md5_to_prev; }
-  clearStep1();
+    // điền MD5 sang B2
+    if(data.echo&&data.echo.promote_next_md5_to_prev){ g('s2-md5').value=data.echo.promote_next_md5_to_prev; }
+    clearStep1();
 
-  let roundData={record:data.summary.last_record, summary:data.summary};
-  if(!roundData.record){ roundData={record:{}, summary:data.summary}; }
-  render('s2-out', roundData, data);
-  swap('step1','step2'); unlockStep2(); toast('Đã tạo dự đoán, sang B2 để xác nhận');
+    // nếu có record cuối trong summary thì show ở khối "Ván vừa rồi"
+    let roundData={record:data.summary.last_record, summary:data.summary};
+    if(!roundData.record){ roundData={record:{}, summary:data.summary}; }
+
+    render('s2-out', roundData, data);
+    unlockStep2();
+    swap('step1','step2'); // <-- CHUYỂN CHẮC CHẮN SANG B2
+    toast('Đã tạo dự đoán, sang B2 để xác nhận');
+  }catch(err){
+    console.error(err);
+    toast('Lỗi không xác định khi dự đoán');
+  }
 }
 
 async function confirmResult(label){
   if(s2Busy) return; s2Busy=true;
-  const md5=g('s2-md5').value || null;
+  try{
+    const md5=g('s2-md5').value || null;
+    const recRes=await fetch('/step2_confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({md5, real:label})});
+    const recData=await recRes.json();
 
-  const recRes=await fetch('/step2_confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({md5, real:label})});
-  const recData=await recRes.json();
+    lastRoundForB1.prevMd5 = md5 || recData.record?.md5 || null;
+    const rdDice = recData.record?.dice;
+    if (Array.isArray(rdDice) && rdDice.length===3 && rdDice.every(n=>Number(n)>0)) {
+      lastRoundForB1.prevDice = rdDice.slice();
+    }
 
-  lastRoundForB1.prevMd5 = md5 || recData.record?.md5 || null;
-  const rdDice = recData.record?.dice;
-  if (Array.isArray(rdDice) && rdDice.length===3 && rdDice.every(n=>Number(n)>0)) {
-    lastRoundForB1.prevDice = rdDice.slice();
+    const pred=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alpha:uiState.alpha, window_n:uiState.windowN, temperature:uiState.temp})});
+    const next=await pred.json();
+
+    render('s2-out', recData, next);
+    lockStep2(); toast('Đã cập nhật & tạo dự đoán mới');
+  }catch(err){
+    console.error(err);
+    toast('Lỗi xác nhận');
+  }finally{
+    s2Busy=false;
   }
-
-  const pred=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alpha:uiState.alpha, window_n:uiState.windowN, temperature:uiState.temp})});
-  const next=await pred.json();
-
-  render('s2-out', recData, next);
-  lockStep2(); toast('Đã cập nhật & tạo dự đoán mới'); s2Busy=false;
 }
 
 async function confirmDice(){
   if(s2Busy) return; s2Busy=true;
-  const d1=valInt('s2-d1'),d2=valInt('s2-d2'),d3=valInt('s2-d3');
-  if(!(d1&&d2&&d3)){toast('Nhập đủ 3 xúc xắc'); s2Busy=false; return;}
-  const md5=g('s2-md5').value || null;
+  try{
+    const d1=valInt('s2-d1'),d2=valInt('s2-d2'),d3=valInt('s2-d3');
+    if(!(d1&&d2&&d3)){toast('Nhập đủ 3 xúc xắc'); return;}
+    const md5=g('s2-md5').value || null;
 
-  const recRes=await fetch('/step2_confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({md5, dice:[d1,d2,d3]})});
-  const recData=await recRes.json();
+    const recRes=await fetch('/step2_confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({md5, dice:[d1,d2,d3]})});
+    const recData=await recRes.json();
 
-  lastRoundForB1.prevMd5 = md5 || recData.record?.md5 || null;
-  lastRoundForB1.prevDice = [d1,d2,d3];
+    lastRoundForB1.prevMd5 = md5 || recData.record?.md5 || null;
+    lastRoundForB1.prevDice = [d1,d2,d3];
 
-  const pred=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alpha:uiState.alpha, window_n:uiState.windowN, temperature:uiState.temp})});
-  const next=await pred.json();
+    const pred=await fetch('/step1_predict',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({alpha:uiState.alpha, window_n:uiState.windowN, temperature:uiState.temp})});
+    const next=await pred.json();
 
-  ['s2-d1','s2-d2','s2-d3'].forEach(id=>g(id).value='');
-  render('s2-out', recData, next);
-  lockStep2(); toast('Đã cập nhật & tạo dự đoán mới'); s2Busy=false;
+    ['s2-d1','s2-d2','s2-d3'].forEach(id=>g(id).value='');
+    render('s2-out', recData, next);
+    lockStep2(); toast('Đã cập nhật & tạo dự đoán mới');
+  }catch(err){
+    console.error(err);
+    toast('Lỗi xác nhận theo DICE');
+  }finally{
+    s2Busy=false;
+  }
 }
 
 function backToStep1(){
@@ -555,22 +572,37 @@ async function loadSummary(){const r=await fetch('/summary');const s=await r.jso
 async function downloadCSV(){const r=await fetch('/export_stats');const t=await r.text();const b=new Blob([t],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='algo_stats.csv';document.body.appendChild(a);a.click();a.remove()}
 async function downloadComboCSV(){const r=await fetch('/export_combo_stats');const t=await r.text();const b=new Blob([t],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='combo_stats.csv';document.body.appendChild(a);a.click();a.remove()}
 function doReset(){const k=prompt('Nhập ADMIN API key để reset:'); if(!k) return; fetch('/reset',{method:'POST',headers:{'X-API-Key':k}}).then(r=>{toast(r.ok?'Đã reset':'Sai key'); closeMenu();})}
-</script>
-</body></html>
-"""
 
-@app.get("/")
-def root():
-    return {"ok": True, "msg": "Open /ui for interface"}
+/* Enter ở B1 = Submit form = gọi doStep1() */
+(function attachEnterSubmit(){
+  const form = document.getElementById('step1Form');
+  const step1 = document.getElementById('step1');
+  const btn = document.getElementById('btnPredict');
+  if(!form || !step1 || !btn) return;
+
+  // KHÔNG dùng inline onsubmit; dùng JS thuần:
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    doStep1();
+  });
+
+  // Bắt Enter trong vùng B1
+  step1.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' && !e.shiftKey){
+      e.preventDefault();
+      if (form.requestSubmit) form.requestSubmit(); else btn.click();
+    }
+  });
+})();
+</script>
+</body></html>"""
 
 @app.get("/ui", response_class=HTMLResponse)
 def ui(request: Request):
     try:
         resp = HTMLResponse(content=PAGE)
-        _ = get_ai(request, resp)  # tạo session + set-cookie
+        _ = get_ai(request, resp)  # tạo session + cookie
         return resp
     except Exception as e:
         import traceback; traceback.print_exc()
-        return HTMLResponse(
-            f"<h3>UI lỗi khởi tạo</h3><pre>{type(e).__name__}: {str(e)}</pre>", status_code=500
-        )
+        return HTMLResponse(f"<h3>UI lỗi khởi tạo</h3><pre>{type(e).__name__}: {str(e)}</pre>", status_code=500)
