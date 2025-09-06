@@ -5,8 +5,7 @@
 from app.db.models import Round
 
 def test_label_mapping():
-    r = Round(d1=6, d2=5, d3=0)
-    # invalid die would be caught by API; here check compute
-    r.d3 = 1; r.compute(); assert r.label == 'XIU'  # 12? nope -> fix
-    r.d1, r.d2, r.d3 = 6, 4, 1; r.compute(); assert r.total == 11 and r.label == 'TAI'
-    r.d1, r.d2, r.d3 = 1, 1, 1; r.compute(); assert r.total == 3 and r.label == 'XIU'
+    r = Round(d1=6, d2=5, d3=1); r.compute(); assert r.total == 12 and r.label == 'TAI'  # 12 → TAI
+    r = Round(d1=4, d2=3, d3=3); r.compute(); assert r.total == 10 and r.label == 'XIU'  # 10 → XIU
+    r = Round(d1=5, d2=5, d3=1); r.compute(); assert r.total == 11 and r.label == 'TAI'  # 11 → TAI
+    r = Round(d1=1, d2=1, d3=1); r.compute(); assert r.total == 3  and r.label == 'XIU'  # 3 → XIU
