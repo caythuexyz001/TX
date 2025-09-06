@@ -24,3 +24,7 @@ def home():
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
     return templates.TemplateResponse("dashboard.html", {"request": request})
+
+@app.get("/md5", response_class=HTMLResponse)
+async def md5_page(request: Request):
+    return templates.TemplateResponse("md5.html", {"request": request})
