@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Predict by MD5</title>
+  <style>
+    body{font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:24px}
+    .card{max-width:520px; margin:auto; padding:20px; border:1px solid #ddd; border-radius:12px}
+    input,button{padding:10px; font-size:16px}
+    input{width:100%; box-sizing:border-box; margin:10px 0}
+    pre{background:#f7f7f7; padding:12px; border-radius:8px; overflow:auto}
+    a{color:#0a84ff; text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Nhập MD5 để dự đoán</h2>
+    <form id="f">
+      <label>MD5 (32 hex)</label>
+      <input id="md5" placeholder="e.g. 3b5d5c3712955042212316173ccf37be" required minlength="32" maxlength="32" pattern="[0-9a-fA-F]{32}">
+      <button type="submit">Predict</button>
+    </form>
+    <div id="out"></div>
+    <p style="margin-top:12px"><a href="/dashboard">← Dashboard</a></p>
+  </div>
+  <script>
+    const f = document.getElementById('f');
+    f.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const md5 = document.getElementById('md5').value.trim();
+      const r = await fetch('/predict?md5='+md5);
+      const j = await r.json();
+      document.getElementById('out').innerHTML =
+        '<h3>Kết quả</h3><pre>'+JSON.stringify(j,null,2)+'</pre>';
+    });
+  </script>
+</body>
+</html>
