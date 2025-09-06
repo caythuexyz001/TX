@@ -22,4 +22,11 @@ def home():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
+
     return templates.TemplateResponse("dashboard.html", {"request": request})
+
+if __name__ == "__main__":
+    import os
+    import uvicorn
+    uvicorn.run("app.api.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    
