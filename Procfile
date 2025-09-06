@@ -1,1 +1,3 @@
-web: uvicorn main:app --host 0.0.0.0 --port $PORT
+pip install fastapi uvicorn opencv-python-headless numpy pillow python-multipart
+uvicorn main:app --reload
+# mở http://127.0.0.1:8000/ui
