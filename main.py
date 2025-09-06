@@ -1,57 +1,75 @@
 # main.py
 from __future__ import annotations
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# Predictor
-from predictor_baccarat import BacPredictor, PredictResult
+# ---------------- Predictor (baccarat) ----------------
+from predictor_baccarat import BacPredictor, PredictResult  # giữ nguyên file của bạn
 
-# OpenCV & Vision (an toàn)
+# ---------------- Safe import: OpenCV & Vision ----------------
+OPENCV_OK = True
+OPENCV_ERR = None
 try:
-    import numpy as np
-    import cv2
-    from vision_road import RoadExtractor, DEFAULT_CFG, render_debug_png
-    OPENCV_OK = True
-except Exception as e:
+    import numpy as np   # type: ignore
+    import cv2           # type: ignore
+except Exception as e:   # OpenCV chưa sẵn sàng
     OPENCV_OK = False
-    np = None  # type: ignore
-    cv2 = None # type: ignore
-    RoadExtractor = None # type: ignore
-    DEFAULT_CFG = {"note":"opencv not available"} # type: ignore
-    def render_debug_png(*args, **kwargs): return b""  # type: ignore
-    print("[WARN] OpenCV/Vision disabled:", e)
+    OPENCV_ERR = repr(e)
+    np = None           # type: ignore
+    cv2 = None          # type: ignore
 
-app = FastAPI(title="TX / Baccarat Predictor (Vision 4 bảng)")
+VISION_OK = False
+VISION_ERR = None
+RoadExtractor = None
+DEFAULT_CFG = {"note": "vision not loaded"}
+def render_debug_png(*args, **kwargs):  # fallback
+    return b""
+
+if OPENCV_OK:
+    try:
+        from vision_road import RoadExtractor, DEFAULT_CFG, render_debug_png
+        VISION_OK = True
+    except Exception as e:
+        VISION_ERR = repr(e)
+else:
+    VISION_ERR = "OpenCV not available"
+
+# ---------------- App ----------------
+app = FastAPI(title="TX / Baccarat Predictor (Vision 4 boards)")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
 PRED = BacPredictor()
-VISION = RoadExtractor() if OPENCV_OK else None
+VISION = RoadExtractor() if VISION_OK else None
 
-# --------- Helpers ---------
-def _valid_side(x: str | None):
+
+# ---------------- Helpers ----------------
+def _valid_side(x: str | None) -> bool:
     return x in (None, "player", "banker", "tie")
 
 def _bp2side(bp: str) -> str:
-    # map P/B/T thành side
+    # map P/B/T thành side cho predictor
     if bp == "P": return "player"
     if bp == "B": return "banker"
     return "tie"
 
-# ----------------- UI cơ bản -----------------
+
+# ---------------- UI ----------------
 @app.get("/", response_class=PlainTextResponse)
 async def root():
     return "OK - TX is running. Go to /ui"
 
 @app.get("/ui", response_class=HTMLResponse)
 async def ui():
+    # UI đơn giản, có Vision block; hiển thị dựa vào state().vision_ok
     return """
 <!doctype html>
 <html lang="vi"><meta charset="utf-8"/>
-<title>TX — Vision Baccarat</title>
+<title>TX — Baccarat Predictor</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#0b0b10;color:#eee;margin:0;padding:24px}
   .wrap{max-width:960px;margin:0 auto}
@@ -79,9 +97,9 @@ async def ui():
     <pre id="out">Kết quả sẽ hiển thị ở đây…</pre>
   </div>
 
-  <div class="card warn" id="ocv_warn" style="display:none">⚠️ Máy chủ không có OpenCV – chức năng đọc ảnh 4 bảng tạm tắt.</div>
+  <div class="card warn" id="warn" style="display:none"></div>
 
-  <div class="card" id="vision_block">
+  <div class="card" id="vision_block" style="display:none">
     <h3>📷 Đọc ảnh 4 bảng (bead/big/big-eye/small)</h3>
     <div class="row">
       <input id="file" type="file" accept="image/*">
@@ -135,20 +153,23 @@ async function uploadImg(mode){
 }
 (async ()=>{
   const s = await fetch('/state').then(r=>r.json());
-  if(s.opencv_ok === false){
-    document.getElementById('ocv_warn').style.display='block';
-    document.getElementById('vision_block').style.display='none';
+  const warn = document.getElementById('warn');
+  if(!s.vision_ok){
+    warn.style.display='block';
+    warn.textContent = 'Máy chủ chưa bật Vision (chi tiết: /debug/opencv và /debug/vision).';
+  }else{
+    document.getElementById('vision_block').style.display='block';
   }
 })();
 </script>
 </html>"""
 
-# ---------- Core APIs ----------
+# ---------------- Core APIs ----------------
 @app.get("/state")
 def state():
     pr = PRED.predict()
     d = pr.__dict__ if hasattr(pr, "__dict__") else pr
-    return {"predict": d, "opencv_ok": OPENCV_OK}
+    return {"predict": d, "opencv_ok": OPENCV_OK, "vision_ok": VISION_OK}
 
 @app.post("/api/update", response_class=PlainTextResponse)
 async def api_update(body: dict):
@@ -168,7 +189,16 @@ async def api_reset():
     PRED.reset()
     return "reset"
 
-# ---------- Vision APIs ----------
+# ---------------- Debug endpoints ----------------
+@app.get("/debug/opencv")
+def debug_opencv():
+    return {"opencv_ok": OPENCV_OK, "error": OPENCV_ERR}
+
+@app.get("/debug/vision")
+def debug_vision():
+    return {"vision_ok": VISION_OK, "error": VISION_ERR}
+
+# ---------------- Vision APIs ----------------
 @app.get("/vision/example_config")
 def vision_example():
     return DEFAULT_CFG
@@ -180,48 +210,10 @@ async def vision_upload(
     cfg_json: str = Form(None),
     debug: str = Form("0"),
 ):
-    if not OPENCV_OK or VISION is None:
-        return JSONResponse({"error":"OpenCV không khả dụng trên máy chủ"}, status_code=503)
+    if not VISION_OK or VISION is None or not OPENCV_OK:
+        return JSONResponse({"error":"Vision/OpenCV không khả dụng trên máy chủ"}, status_code=503)
 
     try:
         data = await image.read()
         arr = np.frombuffer(data, dtype=np.uint8)    # type: ignore
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)    # type: ignore
-        if img is None:
-            return JSONResponse({"error":"Không đọc được ảnh"}, status_code=400)
-
-        # set cấu hình nếu có
-        if cfg_json:
-            import json
-            try:
-                VISION.set_config(json.loads(cfg_json))
-            except Exception:
-                return JSONResponse({"error":"Config JSON không hợp lệ"}, status_code=400)
-
-        result = VISION.process(img)                 # type: ignore
-        seq = result.get("combined", [])
-        if not seq:
-            return JSONResponse({"error":"Không nhận diện được chấm — cần chỉnh ROI/HSV"}, status_code=400)
-
-        if mode == "replace":
-            PRED.reset()
-        # nạp chuỗi B/P vào predictor
-        for bp in seq:
-            PRED.update(_bp2side(bp))
-
-        resp = {"ok": True, "imported": len(seq), "predict": (PRED.predict().__dict__)}
-        resp.update({"vision": {
-            "bead": len(result.get("bead", [])),
-            "big": len(result.get("big", [])),
-            "bigeye": len(result.get("bigeye", [])),
-            "small": len(result.get("small", [])),
-        }})
-
-        if debug in ("1","true","True"):
-            png = render_debug_png(img, result["strip"], result["roi_abs"])  # type: ignore
-            import base64
-            resp["debug_image"] = "data:image/png;base64," + base64.b64encode(png).decode()
-
-        return resp
-    except Exception as e:
-        return JSONResponse({"error": f"Lỗi xử lý ảnh: {e}"}, status_code=500)
+        img = cv2.imdecode
