@@ -1,39 +1,62 @@
-# main.py
+# main.py — Baccarat Soi Cầu (Vision + Ensemble) — bản an toàn cho Railway
+
 from __future__ import annotations
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from predictor_baccarat import BacPredictor
-from vision_road import RoadExtractor, DEFAULT_CFG, render_debug_png
-import numpy as np
-import cv2
-import json
-import base64
 
+# ---- Bọc import OpenCV/NumPy để tránh crash khi môi trường thiếu lib ----
+try:
+    import numpy as np  # type: ignore
+    import cv2          # type: ignore
+    OPENCV_OK = True
+except Exception as e:
+    OPENCV_OK = False
+    np = None          # type: ignore
+    cv2 = None         # type: ignore
+    print("[WARN] OpenCV/NumPy not available:", e)
+
+# ---- App logic ----
+from predictor_baccarat import BacPredictor
+# Khi OpenCV không có, import vision_road vẫn ok (chỉ dùng type/const)
+from vision_road import RoadExtractor, DEFAULT_CFG, render_debug_png  # type: ignore
+
+# -----------------------------------------------------------------------------
+# Khởi tạo FastAPI + Predictor + Vision (nếu khả dụng)
+# -----------------------------------------------------------------------------
 app = FastAPI(title="Baccarat Soi Cầu — Vision + Ensemble")
 PRED = BacPredictor()
-VISION = RoadExtractor()
+VISION = RoadExtractor() if OPENCV_OK else None
 
-# -------- helpers --------
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
 def map_label(token: str):
     t = token.strip().lower()
-    if not t: return None
-    if t in ("b","banker","nha cai","nhà cái","cai"): return "B"
-    if t in ("p","player","nha con","nhà con","con"): return "P"
-    if t in ("t","tie","hoa","hoà","hòa"): return "T"
+    if not t:
+        return None
+    if t in ("b", "banker", "nha cai", "nhà cái", "cai"):
+        return "B"
+    if t in ("p", "player", "nha con", "nhà con", "con"):
+        return "P"
+    if t in ("t", "tie", "hoa", "hoà", "hòa"):
+        return "T"
     return None
 
 def parse_bulk(s: str):
-    seps = [",",";","|","/","\\","\n","\t"," "]
+    seps = [",", ";", "|", "/", "\\", "\n", "\t", " "]
     for sp in seps[1:]:
         s = s.replace(sp, seps[0])
-    toks = [x for x in s.split(seps[0]) if x.strip()!=""]
-    out=[]
+    toks = [x for x in s.split(seps[0]) if x.strip() != ""]
+    out = []
     for tk in toks:
         lab = map_label(tk)
-        if lab in ("B","P","T"): out.append(lab)
+        if lab in ("B", "P", "T"):
+            out.append(lab)
     return out
 
-# -------- UI --------
+# -----------------------------------------------------------------------------
+# UI (Web)
+# -----------------------------------------------------------------------------
 PAGE = r"""<!doctype html><html lang="vi"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Vision Baccarat Soi Cầu</title>
@@ -56,9 +79,14 @@ input,textarea{width:100%;background:#0b0e14;border:1px solid var(--line);border
 .kpi .box{background:#0d1118;border:1px solid var(--line);border-radius:12px;text-align:center;padding:10px}
 .bar{height:10px;border-radius:6px;background:#10141b;overflow:hidden}
 .fill{height:100%}
+.alert{background:#1b1f2a;border:1px dashed #3a4152;color:#e6e6e6;border-radius:10px;padding:10px;margin-top:8px}
 </style></head><body>
 <div class="wrap">
   <h1>🎴 Baccarat Soi Cầu — Vision (đọc 4 bảng) + Ensemble</h1>
+
+  <div class="card alert" id="ocv_warn" style="display:none">
+    ⚠️ Máy chủ hiện không có OpenCV/NumPy, chức năng đọc ảnh (Vision) sẽ bị tắt. Bạn vẫn có thể nhập dữ liệu thủ công/bulk.
+  </div>
 
   <div class="row">
     <button class="btn b" onclick="send('B')">+ Nhà cái (B)</button>
@@ -71,7 +99,7 @@ input,textarea{width:100%;background:#0b0e14;border:1px solid var(--line);border
 
   <div class="card" id="console"><pre>Đang khởi tạo…</pre></div>
 
-  <div class="card">
+  <div class="card" id="vision_block">
     <div style="font-weight:800;margin-bottom:6px">📥 Đọc lịch sử từ ẢNH (4 bảng)</div>
     <div class="row">
       <input id="cfg" placeholder="Dán JSON ROI/HSV (để trống dùng mặc định)">
@@ -114,7 +142,7 @@ async function call(path, body){
 async function send(l){ render(await call('/update',{r:l})); }
 async function undo(){ render(await call('/undo',{})); }
 async function resetAll(){ render(await call('/reset',{})); }
-async function refresh(){ render(await fetch('/state').then(r=>r.json())); }
+async function refresh(){ const d = await fetch('/state').then(r=>r.json()); render(d); if(d.opencv_ok===false){ document.getElementById('ocv_warn').style.display='block'; document.getElementById('vision_block').style.display='none'; } }
 
 async function bulkAppend(){ const txt=document.getElementById('bulk').value.trim(); if(!txt) return; render(await call('/bulk',{text:txt,mode:'append'})); }
 async function bulkReplace(){ const txt=document.getElementById('bulk').value.trim(); if(!txt) return; render(await call('/bulk',{text:txt,mode:'replace'})); }
@@ -179,34 +207,52 @@ refresh();
 </script></body></html>
 """
 
+# -----------------------------------------------------------------------------
+# Routes: UI + Core
+# -----------------------------------------------------------------------------
 @app.get("/ui", response_class=HTMLResponse)
-def ui(): return HTMLResponse(PAGE)
+def ui():
+    return HTMLResponse(PAGE)
 
-# -------- core APIs --------
 @app.get("/state")
 def state():
     pred = PRED.predict()
-    return {"history": PRED.H[-300:], "stats": PRED.stats(), "predict": pred, "streaks": PRED.streaks()}
+    # gửi trạng thái OPENCV_OK để UI tự ẩn/hiện khối Vision
+    return {
+        "history": PRED.H[-300:],
+        "stats": PRED.stats(),
+        "predict": pred,
+        "streaks": PRED.streaks(),
+        "opencv_ok": OPENCV_OK,
+    }
 
 @app.post("/update")
 def update(body: dict):
     lab = (body or {}).get("r")
-    if lab not in ("B","P","T"): return JSONResponse({"error":"r must be B/P/T"}, status_code=400)
-    PRED.update(lab); return state()
+    if lab not in ("B", "P", "T"):
+        return JSONResponse({"error": "r must be B/P/T"}, status_code=400)
+    PRED.update(lab)
+    return state()
 
 @app.post("/undo")
-def undo(): PRED.undo(); return state()
+def undo():
+    PRED.undo()
+    return state()
 
 @app.post("/reset")
-def reset(): PRED.reset(); return state()
+def reset():
+    PRED.reset()
+    return state()
 
 @app.post("/bulk")
 def bulk(body: dict):
-    text = (body or {}).get("text","")
-    mode = (body or {}).get("mode","append")
+    text = (body or {}).get("text", "")
+    mode = (body or {}).get("mode", "append")
     seq = parse_bulk(text)
-    if mode == "replace": PRED.reset()
-    for lab in seq: PRED.update(lab)
+    if mode == "replace":
+        PRED.reset()
+    for lab in seq:
+        PRED.update(lab)
     return state()
 
 @app.get("/export_csv")
@@ -214,67 +260,91 @@ def export_csv():
     H = PRED.H[:]
     rows = ["index,true,probB,probP,probT,guess,correct,cum_acc"]
     if not H:
-        return PlainTextResponse("\n".join(rows), media_type="text/csv",
-                                 headers={"Content-Disposition":"attachment; filename=baccarat_report.csv"})
-    wins=total=0
+        return PlainTextResponse(
+            "\n".join(rows),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=baccarat_report.csv"},
+        )
+    wins = total = 0
     tmp = BacPredictor()
-    for i,true_lab in enumerate(H, start=1):
+    for i, true_lab in enumerate(H, start=1):
         pred = tmp.predict()
-        pB,pP,pT = pred["probs"]["B"], pred["probs"]["P"], pred["probs"]["T"]
-        guess = pred["guess"]; correct = 1 if guess==true_lab else 0
-        total += 1; wins += correct
+        pB, pP, pT = pred["probs"]["B"], pred["probs"]["P"], pred["probs"]["T"]
+        guess = pred["guess"]
+        correct = 1 if guess == true_lab else 0
+        total += 1
+        wins += correct
         rows.append(f"{i},{true_lab},{pB:.6f},{pP:.6f},{pT:.6f},{guess},{correct},{wins/total:.6f}")
         tmp.update(true_lab)
     csv = "\n".join(rows)
-    return PlainTextResponse(csv, media_type="text/csv",
-                             headers={"Content-Disposition":"attachment; filename=baccarat_report.csv"})
+    return PlainTextResponse(
+        csv,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=baccarat_report.csv"},
+    )
 
-# -------- VISION APIs --------
+# -----------------------------------------------------------------------------
+# Vision APIs (được bật khi OPENCV_OK)
+# -----------------------------------------------------------------------------
 @app.get("/vision/example_config")
 def vision_example():
+    # Trả config mẫu kể cả khi không có OpenCV (để bạn copy chỉnh thủ công)
     return DEFAULT_CFG
 
 @app.post("/vision/upload")
-async def vision_upload(image: UploadFile = File(...),
-                        mode: str = Form("append"),
-                        cfg_json: str = Form(None),
-                        debug: str = Form("0")):
+async def vision_upload(
+    image: UploadFile = File(...),
+    mode: str = Form("append"),
+    cfg_json: str = Form(None),
+    debug: str = Form("0"),
+):
+    if not OPENCV_OK or VISION is None:
+        return JSONResponse(
+            {"error": "OpenCV không khả dụng trên máy chủ – không thể đọc ảnh."},
+            status_code=503,
+        )
     try:
         data = await image.read()
-        file_bytes = np.frombuffer(data, np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        file_bytes = np.frombuffer(data, np.uint8)  # type: ignore
+        img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)  # type: ignore
         if img is None:
-            return JSONResponse({"error":"Không đọc được ảnh"}, status_code=400)
+            return JSONResponse({"error": "Không đọc được ảnh"}, status_code=400)
 
+        # cập nhật config nếu gửi kèm
         if cfg_json:
+            import json
             try:
                 cfg = json.loads(cfg_json)
-                VISION.set_config(cfg)
+                VISION.set_config(cfg)  # type: ignore
             except Exception:
-                return JSONResponse({"error":"Config JSON không hợp lệ"}, status_code=400)
+                return JSONResponse({"error": "Config JSON không hợp lệ"}, status_code=400)
 
-        result = VISION.process(img)
+        result = VISION.process(img)  # type: ignore
         seq = result.get("combined", [])
         if not seq:
-            return JSONResponse({"error":"Không nhận diện được chấm ở các bảng. Hãy chỉnh ROI/HSV."}, status_code=400)
+            return JSONResponse(
+                {"error": "Không nhận diện được chấm ở các bảng. Hãy chỉnh ROI/HSV."},
+                status_code=400,
+            )
 
         if mode == "replace":
             PRED.reset()
         for lab in seq:
-            if lab in ("B","P","T"):
+            if lab in ("B", "P", "T"):
                 PRED.update(lab)
 
         resp = state()
         resp["vision"] = {
-            "bead": len(result["bead"]),
-            "big": len(result["big"]),
-            "bigeye": len(result["bigeye"]),
-            "small": len(result["small"]),
-            "strip": result["strip"],
+            "bead": len(result.get("bead", [])),
+            "big": len(result.get("big", [])),
+            "bigeye": len(result.get("bigeye", [])),
+            "small": len(result.get("small", [])),
+            "strip": result.get("strip"),
         }
 
-        if debug in ("1","true","True"):
-            png_bytes = render_debug_png(img, result["strip"], result["roi_abs"])
+        if debug in ("1", "true", "True"):
+            png_bytes = render_debug_png(img, result["strip"], result["roi_abs"])  # type: ignore
+            import base64
             b64 = base64.b64encode(png_bytes).decode("ascii")
             resp["debug_image"] = f"data:image/png;base64,{b64}"
 
