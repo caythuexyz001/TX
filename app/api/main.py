@@ -2,8 +2,10 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from contextlib import asynccontextmanager
 from app.db.base import init_db
 from app.api.routes import router
+
 
 app = FastAPI(title="TaiXiu Analyzer")
 app.include_router(router)
@@ -30,3 +32,4 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.api.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
     
+
