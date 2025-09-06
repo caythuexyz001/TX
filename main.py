@@ -204,16 +204,8 @@ def vision_example():
     return DEFAULT_CFG
 
 @app.post("/vision/upload")
-async def vision_upload(
-    image: UploadFile = File(...),
-    mode: str = Form("append"),
-    cfg_json: str = Form(None),
-    debug: str = Form("0"),
-):
-    if not VISION_OK or VISION is None or not OPENCV_OK:
-        return JSONResponse({"error":"Vision/OpenCV không khả dụng trên máy chủ"}, status_code=503)
-
-    try:
-        data = await image.read()
-        arr = np.frombuffer(data, dtype=np.uint8)    # type: ignore
-        img = cv2.imdecode
+data = await image.read()
+arr = np.frombuffer(data, dtype=np.uint8)
+img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+if img is None:
+    return JSONResponse({"error": "Không đọc được ảnh"}, status_code=400)
