@@ -6,17 +6,16 @@ from contextlib import asynccontextmanager
 from app.db.base import init_db
 from app.api.routes import router
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    yield
 
-app = FastAPI(title="TaiXiu Analyzer")
+app = FastAPI(title="TaiXiu Analyzer", lifespan=lifespan)
 app.include_router(router)
 
-# UI assets
 app.mount("/static", StaticFiles(directory="app/ui/static"), name="static")
 templates = Jinja2Templates(directory="app/ui/templates")
-
-@app.on_event("startup")
-async def _startup():
-    init_db()
 
 @app.get("/")
 def home():
@@ -24,12 +23,4 @@ def home():
 
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-
     return templates.TemplateResponse("dashboard.html", {"request": request})
-
-if __name__ == "__main__":
-    import os
-    import uvicorn
-    uvicorn.run("app.api.main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-    
-
