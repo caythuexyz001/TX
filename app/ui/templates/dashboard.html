@@ -1,32 +1,69 @@
 <!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>TaiXiu Analyzer</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <style>
-    body{font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:20px}
-    .grid{display:grid; grid-template-columns:1fr 1fr; gap:20px}
-    .card{padding:16px; border:1px solid #ddd; border-radius:16px; box-shadow:0 1px 3px rgba(0,0,0,.05)}
-    canvas{width:100%}
-    table{width:100%; border-collapse:collapse}
-    th,td{padding:8px; border-bottom:1px solid #eee; text-align:left}
-  </style>
+<title>TaiXiu Analyzer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:20px}
+.grid{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+.card{padding:16px; border:1px solid #ddd; border-radius:16px; box-shadow:0 1px 3px rgba(0,0,0,.05)}
+canvas{width:100%}
+table{width:100%; border-collapse:collapse}
+th,td{padding:8px; border-bottom:1px solid #eee; text-align:left}
+input{padding:8px;border:1px solid #ccc;border-radius:8px;margin-right:8px}
+button{padding:8px 12px;border:0;border-radius:10px;background:#111;color:#fff;cursor:pointer}
+.row{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+.muted{color:#666; font-size:12px}
+</style>
 </head>
 <body>
-  <h1>TaiXiu Analyzer</h1>
-  <div class="grid">
-    <div class="card"><h3>Streak (T/X)</h3><canvas id="streak"></canvas></div>
-    <div class="card"><h3>Markov Heatmap</h3><canvas id="heat"></canvas></div>
-  </div>
-  <div class="card" style="margin-top:20px">
-    <h3>Patterns</h3>
-    <table>
-      <thead><tr><th>Type</th><th>Detail</th><th>Length</th></tr></thead>
-      <tbody id="pattern-body"></tbody>
-    </table>
-  </div>
-  <script src="/static/dashboard.js"></script>
+<h1>TaiXiu Analyzer</h1>
+
+
+<div class="grid">
+<div class="card">
+<h3>Predict từ MD5</h3>
+<div class="row">
+<input id="md5-input" placeholder="nhập MD5 32 hex" size="38"/>
+<button id="btn-predict">Predict</button>
+</div>
+<p class="muted" id="predict-msg"></p>
+</div>
+
+
+<div class="card">
+<h3>Nhập kết quả thực tế (liên kết cùng MD5)</h3>
+<div class="row">
+<input id="md5-actual" placeholder="MD5 (tùy chọn)" size="34"/>
+<input id="d1" type="number" min="1" max="6" placeholder="d1"/>
+<input id="d2" type="number" min="1" max="6" placeholder="d2"/>
+<input id="d3" type="number" min="1" max="6" placeholder="d3"/>
+<button id="btn-ingest">Lưu</button>
+</div>
+<p class="muted" id="ingest-msg"></p>
+</div>
+</div>
+
+
+<div class="grid" style="margin-top:20px">
+<div class="card"><h3>Streak (T/X)</h3><canvas id="streak"></canvas></div>
+<div class="card"><h3>Markov Heatmap</h3><canvas id="heat"></canvas></div>
+</div>
+
+
+<div class="card" style="margin-top:20px">
+<h3>Lịch sử dự đoán gần nhất</h3>
+<div class="row">
+<div id="summary">Wins: 0 · Losses: 0 · Winrate: 0%</div>
+<button id="btn-refresh">Refresh</button>
+</div>
+<table>
+<thead><tr>
+<th>Time</th><th>MD5</th><th>Pred</th><th>P(T)</th><th>P(X)</th><th>Actual</th><th>Result</th>
+</tr></thead>
+<tbody id="hist-body"></tbody>
+</table>
+</div>
+
+
+<script src="/static/dashboard.js"></script>
 </body>
 </html>
