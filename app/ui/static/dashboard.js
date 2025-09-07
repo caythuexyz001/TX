@@ -1,55 +1,76 @@
-async function fetchJSON(url){
-  const r = await fetch(url);
-  return await r.json();
+async function fetchJSON(url, opts={}){
+// attempt to reconstruct labels from recent history instead of counts
+const hist = await fetchJSON('/history?limit=200');
+const labels = hist.items.map(it => (it.actual_label ? (it.actual_label==='TAI'?'T':'X') : null)).filter(Boolean);
+renderStreak(labels);
+renderHeat(stats.transition);
 }
 
-let streakChart, heatChart;
 
-function renderStreak(labels){
-  const ctx = document.getElementById('streak');
-  const data = labels.map((v,i)=>({x:i+1, y: v==='T'?1:0}));
-  const cfg = {type:'line', data:{datasets:[{label:'T=1, X=0', data}]}, options:{scales:{y:{min:-0.1, max:1.1}}}};
-  if(streakChart){ streakChart.destroy(); }
-  streakChart = new Chart(ctx, cfg);
+async function refreshHistory(){
+const h = await fetchJSON('/history?limit=50');
+const s = await fetchJSON('/summary');
+setText('summary', `Wins: ${s.wins} · Losses: ${s.losses} · Winrate: ${fmtPct(s.winrate)}`);
+const tb = document.getElementById('hist-body');
+tb.innerHTML = '';
+h.items.forEach(it =>{
+const tr = document.createElement('tr');
+const res = it.correct===true ? 'WIN' : (it.correct===false ? 'LOSE' : '—');
+tr.innerHTML = `<td>${new Date(it.ts).toLocaleString()}</td>
+<td style="font-family:monospace">${it.md5}</td>
+<td>${it.label_pred}</td>
+<td>${it.p_tai.toFixed(3)}</td>
+<td>${it.p_xiu.toFixed(3)}</td>
+<td>${it.actual_label||''}</td>
+<td>${res}</td>`;
+tb.appendChild(tr);
+})
 }
 
-function renderHeat(map){
-  const ctx = document.getElementById('heat');
-  const data = {
-    labels:['T→T','T→X','X→T','X→X'],
-    datasets:[{label:'P', data:[map[0][0], map[0][1], map[1][0], map[1][1]]}]
-  };
-  const cfg = {type:'bar', data};
-  if(heatChart){ heatChart.destroy(); }
-  heatChart = new Chart(ctx, cfg);
+
+async function doPredict(){
+const md5 = document.getElementById('md5-input').value.trim();
+if(!md5){ setText('predict-msg', 'Nhập MD5 trước.'); return; }
+try{
+const r = await fetchJSON(`/predict?md5=${encodeURIComponent(md5)}`);
+setText('predict-msg', `→ Predict: ${r.label_suggest} | P(T)=${r.p_tai.toFixed(3)}, P(X)=${r.p_xiu.toFixed(3)} (ID ${r.prediction_id})`);
+document.getElementById('md5-actual').value = md5; // tiện nhập actual cho cùng MD5
+document.getElementById('md5-input').select();
+refreshHistory();
+}catch(e){ setText('predict-msg', 'Lỗi: '+e.message); }
 }
 
-function renderPatterns(p){
-  const tb = document.getElementById('pattern-body');
-  tb.innerHTML = '';
-  const rows = [];
-  p.runs.forEach(([s,e,ch,len])=>rows.push(['RUN', `${ch} ${len}x (idx ${s}-${e})`, len]));
-  p.alternations.forEach(([s,e])=>rows.push(['ALT', `alternation (idx ${s}-${e})`, e-s+1]));
-  p.blocks.forEach(([s,e,blk,count])=>rows.push(['BLOCK', `${blk} × ${count} (idx ${s}-${e})`, count*4]));
-  rows.slice(0,50).forEach(r=>{
-    const tr=document.createElement('tr');
-    tr.innerHTML = `<td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td>`;
-    tb.appendChild(tr);
-  });
+
+async function doIngest(){
+const md5 = document.getElementById('md5-actual').value.trim();
+const d1 = parseInt(document.getElementById('d1').value, 10);
+const d2 = parseInt(document.getElementById('d2').value, 10);
+const d3 = parseInt(document.getElementById('d3').value, 10);
+try{
+const body = {d1, d2, d3};
+if(md5) body.md5 = md5;
+const r = await fetchJSON('/ingest', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+if(r.resolved_prediction){
+const ok = r.resolved_prediction.correct ? 'WIN' : 'LOSE';
+setText('ingest-msg', `Lưu vòng #${r.stored_round.id} (${r.stored_round.label}) · gắn với predict ${r.resolved_prediction.id} → ${ok}`);
+}else{
+setText('ingest-msg', `Lưu vòng #${r.stored_round.id} (${r.stored_round.label})`);
+}
+refreshStats();
+refreshHistory();
+}catch(e){ setText('ingest-msg', 'Lỗi: '+e.message); }
 }
 
-async function refresh(){
-  const stats = await fetchJSON('/stats');
-  const pats = await fetchJSON('/patterns');
-  // Build streak from counts approximation (for a quick view we re-query history via patterns labels length) – in MVP we skip full history endpoint
-  const labels = [];
-  const total = stats.counts[0][0]+stats.counts[0][1]+stats.counts[1][0]+stats.counts[1][1];
-  // Dummy visual: last_label repeated total times (simple placeholder since API hasn't history endpoint yet)
-  for(let i=0;i<Math.max(total, 10);i++){ labels.push(stats.last_label||'T'); }
-  renderStreak(labels);
-  renderHeat(stats.transition);
-  renderPatterns(pats);
-}
 
-refresh();
-setInterval(refresh, 4000);
+document.getElementById('btn-predict').addEventListener('click', doPredict);
+
+
+document.getElementById('btn-ingest').addEventListener('click', doIngest);
+
+
+document.getElementById('btn-refresh').addEventListener('click', ()=>{refreshStats(); refreshHistory();});
+
+
+refreshStats();
+refreshHistory();
+setInterval(()=>{refreshStats(); refreshHistory();}, 5000);
